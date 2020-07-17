@@ -13,6 +13,7 @@ CEliteControl::CEliteControl():
     m_bIsRecordReset(false),
     m_bEmeStop(false),
     m_bArmInit(false),
+    m_bResetFromNearestPoint(true),
     m_nDragStatus(DISABLE),
     m_nEliteState(ALARM),
     m_nEliteMode(Remote),
@@ -615,7 +616,7 @@ int CEliteControl::UpdateEltOrigin()
 
     if(vCmdList.size() < 6)
     {
-        ROS_ERROR("[EliteRunDragTrack] arm origin error:%s", m_sArmOrigin.c_str());
+        ROS_ERROR("[UpdateEltOrigin] arm origin error:%s", m_sArmOrigin.c_str());
         return -1;
     }
     else
@@ -1022,6 +1023,10 @@ int CEliteControl::EliteRunDragTrack(const string &sFileName, double dSpeed, int
     //剔除机械臂bug引入的异常错误点
     RemoveErrPoints(trackDeque);
 
+    //复位过程中,异常停止,或第一次上电复位，重新复位时,要寻找最近的点
+    if(m_bResetFromNearestPoint && nDirection == REVERSE)
+        RemoveOverduePoints(trackDeque);
+
     //根据方向，调用elt库函数，将队列中的点添加的elt运动轨迹点当中
     int nLen = int(trackDeque.size());
 
@@ -1147,6 +1152,8 @@ bool CEliteControl::ResetToOrigin(string &sOutput)
             m_nTaskName = IDLE;
             return false;
         }
+
+        m_bResetFromNearestPoint = true;
         this_thread::sleep_for(std::chrono::milliseconds(500));
     }
 
@@ -1196,6 +1203,8 @@ bool CEliteControl::EliteGotoOrigin(string &sOutput)
     if(CheckOrigin(m_EliteCurrentPos))
     {
         ROS_INFO("[EliteGotoOrigin] robot arm is already at origin.");
+        if(m_bResetFromNearestPoint)
+            m_bResetFromNearestPoint = false;
         return true;
     }
     m_bIsRecordReset = false;
@@ -1260,6 +1269,9 @@ bool CEliteControl::EliteGotoOrigin(string &sOutput)
             return false;
         }
         m_bWriteOrigin = true;
+
+        if(m_bResetFromNearestPoint)
+            m_bResetFromNearestPoint = false;
     }
 
     Lock.unlock();
@@ -2299,6 +2311,7 @@ bool CEliteControl::Reset(std::string &sOutput)
                 return false;
             }
         }
+        m_bResetFromNearestPoint = true;
     }
 
     if(!ResetToOrigin(sOutput))
@@ -2732,6 +2745,61 @@ void CEliteControl::RemoveErrPoints(deque<EltPos> &trackDeque)
         iter++;
         nCount++;
     }
+}
+
+/*************************************************
+Function: CEliteControl::RemoveErrPoints
+Description: 用于程序启动时寻找复位轨迹中离当前位置最近的点，规避复位过程中断电重启引入的机械臂轨迹无法安全控制的问题
+Input: void
+Output: 1, 成功
+       -1, 失败
+Others: void
+**************************************************/
+void CEliteControl::RemoveOverduePoints(deque<EltPos> &trackDeque)
+{
+    elt_robot_pos currentPos;
+    memcpy(currentPos, m_EliteCurrentPos, sizeof(currentPos));
+    int nCount = 0;
+    int nMinNum = 0;
+    double dMinDistance = 360.0*6;
+
+    deque<EltPos>::iterator iter;
+    for( iter = trackDeque.begin(); iter != trackDeque.end(); )
+    {
+        double dSquaresSum = 0.0;
+        for(int i=0; i<6; i++)
+        {
+            double dDiff = iter->eltPos[i] - currentPos[i];
+            dSquaresSum += dDiff * dDiff;
+        }
+
+        double dDistance = sqrt(dSquaresSum);
+        if(dMinDistance > dDistance)
+        {
+            nMinNum = nCount;
+            dMinDistance = dDistance;
+        }
+
+        iter++;
+        nCount++;
+    }
+
+    deque<EltPos>::iterator iterBegin = trackDeque.begin() + nMinNum + 1;
+    deque<EltPos>::iterator iterEnd = trackDeque.end();
+
+    if(iterBegin <= iterEnd)
+        trackDeque.erase(iterBegin, iterEnd);
+
+    deque<EltPos>::iterator iterResetStartPoint = iterBegin - 1;
+
+    string sCurrentPos, sStartPos;
+    for(int i=0; i<6; i++)
+    {
+        sCurrentPos.append(to_string(currentPos[i])).append(" ");
+        sStartPos.append(to_string(iterResetStartPoint->eltPos[i])).append(" ");
+    }
+    ROS_INFO("[RemoveOverduePoints] current point:%s", sCurrentPos.c_str());
+    ROS_INFO("[RemoveOverduePoints] reset start point:%s", sStartPos.c_str());
 }
 
 CEliteControl::~CEliteControl()

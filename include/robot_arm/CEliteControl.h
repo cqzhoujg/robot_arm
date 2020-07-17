@@ -153,6 +153,7 @@ public:
     void LinearSmooth7(double *dSrc, double *dDest, int nLen);
     void PrintJointData(elt_robot_pos &pos_array, string sFunName);
     void RemoveErrPoints(deque<EltPos> &trackDeque);
+    void RemoveOverduePoints(deque<EltPos> &trackDeque);
 
     int UpdateEltOrigin();
     int EliteJointMove(elt_robot_pos &targetPos, double dSpeed, string &sErr);
@@ -223,6 +224,7 @@ private:
     bool m_bWriteOrigin;
     bool m_bEmeStop;
     bool m_bArmInit;
+    bool m_bResetFromNearestPoint;
 
     double m_dEltSpeed;//百分比
     double m_dRotateSpeed;//百分比
