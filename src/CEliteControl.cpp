@@ -1736,7 +1736,7 @@ bool CEliteControl::ArmOperation(const std::string &sCommand, const std::string 
 
     if(sCommand == "record_orbit")
     {
-        return RecordOrbit(sOutput);
+        return RecordOrbit(sInput, sOutput);
     }
     else if(sCommand == "stop_orbit")
     {
@@ -1820,12 +1820,13 @@ bool CEliteControl::ArmOperation(const std::string &sCommand, const std::string 
 /*************************************************
 Function: CEliteControl::RecordOrbit
 Description: 拖拽轨迹记录功能函数
-Input: std::string &sOutput, 处理结果反馈
+Input: const std::string &sInput, 轨迹全路径+名称
+ 	   std::string &sOutput, 处理结果反馈
 Output: true 成功
         false 失败
 Others: void
 **************************************************/
-bool CEliteControl::RecordOrbit(std::string &sOutput)
+bool CEliteControl::RecordOrbit(const std::string &sInput, std::string &sOutput)
 {
     m_bIgnoreMove = true;
     if(!ResetToOrigin(sOutput))
@@ -1835,7 +1836,33 @@ bool CEliteControl::RecordOrbit(std::string &sOutput)
         return false;
     }
 
-    string sTrackFile = m_sArmTrackPath + m_sOrbitFileName;
+	string sTrackFile = m_sArmTrackPath + m_sOrbitFileName;
+    string sFilePath;
+
+	if(!sInput.empty())
+	{
+		sTrackFile = sInput;
+		sFilePath = sTrackFile.substr(0, sTrackFile.find_last_of("/"));
+		string sCmd = "mkdir -p ";
+		sCmd.append(sFilePath);
+		int nStatus = system(sCmd.c_str());
+		if(-1 == nStatus)
+		{
+			sOutput = "create data path failed, system error";
+			ROS_ERROR("[RecordOrbit]%s",sOutput.c_str());
+			return false;
+		}
+		else
+		{
+			if(0 == int(WIFEXITED(nStatus)))
+			{
+				sOutput = "create data path failed, run shell error";
+				ROS_ERROR("[RecordOrbit]%s",sOutput.c_str());
+				return false;
+			}
+		}
+	}
+
     ROS_INFO("[RecordOrbit] the orbit file is:%s",sTrackFile.c_str());
 
     if(m_TrackFile.CloseFile() == -1)

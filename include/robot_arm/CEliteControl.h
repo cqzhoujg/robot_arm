@@ -174,7 +174,7 @@ public:
     bool WaitForMotionStop(int nTimeoutTime, string &sErr);
     bool ArmServiceFunc(wootion_msgs::ControlService::Request &Req, wootion_msgs::ControlService::Response &Resp);
     bool ArmOperation(const std::string &sCommand, const std::string &sInput, std::string &sOutput);
-    bool RecordOrbit(std::string &sOutput);
+    bool RecordOrbit(const std::string &sInput, std::string &sOutput);
     bool StopOrbit(std::string &sOutput);
     bool PlayOrbit(const std::string &sInput, std::string &sOutput);
     bool Rotate(const std::string &sInput, std::string &sOutput);
