@@ -62,6 +62,7 @@ typedef enum _tagArmStatus
     SET_ARM_YAW = 6,
     TEACH = 7,
     ERROR = 8,
+    SET_ORIENTATION = 9,
 }ArmStatus;
 
 const static vector<string> vsArmStatus = {
@@ -74,6 +75,7 @@ const static vector<string> vsArmStatus = {
     "set_arm_yaw",
     "teach",
     "error",
+    "set_orientation",
 };
 
 typedef enum _tagDragStatus
@@ -219,7 +221,6 @@ private:
 
     bool m_bRecordDragTrack;
     bool m_bBusy;
-    bool m_bIgnoreMove;
     bool m_bIsRecordReset;
     bool m_bWriteOrigin;
     bool m_bEmeStop;
