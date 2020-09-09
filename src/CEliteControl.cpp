@@ -1371,7 +1371,7 @@ int CEliteControl::EliteOpenServo()
 
     if(ELT_FALSE  == nServoStatus)
     {
-        ROS_ERROR("[Init] get elt servo status failed. nRet=%d, err.code=%d, err.msg=%s", nRet, err.code, err.err_msg);
+        ROS_ERROR("[EliteOpenServo] elite open servo failed, retry times:%d", nRetryTimes);
         return -1;
     }
 
