@@ -1825,7 +1825,7 @@ bool CEliteControl::RecordOrbit(const std::string &sInput, std::string &sOutput)
 	if(!sInput.empty())
 	{
 		sTrackFile = sInput;
-		sFilePath = sTrackFile.substr(0, sTrackFile.find_last_of("/"));
+		sFilePath = sTrackFile.substr(0, sTrackFile.find_last_of('/'));
 		string sCmd = "mkdir -p ";
 		sCmd.append(sFilePath);
 		int nStatus = system(sCmd.c_str());
