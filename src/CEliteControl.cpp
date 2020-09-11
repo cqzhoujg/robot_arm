@@ -2604,6 +2604,7 @@ void CEliteControl::AgvStatusCallBack(const wootion_msgs::RobotStatus::ConstPtr 
             }
             memcpy(m_RotateOriginPos, m_EliteCurrentPos, sizeof(m_RotateOriginPos));
             m_bArmInit = true;
+            m_nTaskName = IDLE;
         }
 
         if(m_nDragStatus == ENABLE)
