@@ -222,8 +222,6 @@ bool CEliteControl::Init()
         return false;
     }
 
-    this_thread::sleep_for(std::chrono::milliseconds(3500));
-
     //打开伺服, 3次重试
     if(EliteOpenServo() == -1)
     {
@@ -1128,8 +1126,6 @@ bool CEliteControl::ResetToOrigin(string &sOutput)
             ROS_ERROR("[ResetToOrigin]%s",sOutput.c_str());
             return false;
         }
-
-        this_thread::sleep_for(std::chrono::milliseconds(3500));
 
         if(EliteOpenServo() == -1)
         {
@@ -2590,8 +2586,6 @@ void CEliteControl::AgvStatusCallBack(const wootion_msgs::RobotStatus::ConstPtr 
             ROS_ERROR("[AgvStatusCallBack] sync elite motor status failed");
             return;
         }
-
-        this_thread::sleep_for(std::chrono::milliseconds(3500));
 
         //打开伺服,3次重试
         if(EliteOpenServo() == -1)
