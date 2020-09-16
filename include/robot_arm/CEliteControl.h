@@ -237,6 +237,7 @@ private:
     bool m_bEmeStop;
     bool m_bArmInit;
     bool m_bResetFromNearestPoint;
+    bool m_bDragRecord;
 
     double m_dEltSpeed;//百分比
     double m_dRotateSpeed;//百分比

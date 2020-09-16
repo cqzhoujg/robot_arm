@@ -12,6 +12,7 @@ CEliteControl::CEliteControl():
     m_bEmeStop(false),
     m_bArmInit(false),
     m_bResetFromNearestPoint(true),
+    m_bDragRecord(true),
     m_nDragStatus(DISABLE),
     m_nEliteState(ALARM),
     m_nEliteMode(Remote),
@@ -1863,12 +1864,18 @@ bool CEliteControl::RecordOrbit(const std::string &sInput, std::string &sOutput)
         return false;
     }
 
-	string sTrackFile = m_sArmTrackPath + m_sOrbitFileName;
+    vector<string> vCmdList;
+    boost::split(vCmdList, sInput, boost::is_any_of(","), boost::token_compress_on);
+    if(vCmdList.size() > 1)
+    {
+        m_bDragRecord = !(vCmdList[1] == "teach");
+    }
+
+	string sTrackFile = vCmdList[0];
     string sFilePath;
 
-	if(!sInput.empty())
+	if(!sTrackFile.empty())
 	{
-		sTrackFile = sInput;
 		sFilePath = sTrackFile.substr(0, sTrackFile.find_last_of('/'));
 		string sCmd = "mkdir -p ";
 		sCmd.append(sFilePath);
@@ -1889,6 +1896,10 @@ bool CEliteControl::RecordOrbit(const std::string &sInput, std::string &sOutput)
 			}
 		}
 	}
+	else
+    {
+        sTrackFile = m_sArmTrackPath + m_sOrbitFileName;
+    }
 
     ROS_INFO("[RecordOrbit] the orbit file is:%s",sTrackFile.c_str());
 
@@ -1902,11 +1913,15 @@ bool CEliteControl::RecordOrbit(const std::string &sInput, std::string &sOutput)
         ROS_ERROR("[RecordOrbit]%s",sOutput.c_str());
         return false;
     }
-    if(EliteDrag(ENABLE) == -1)
+
+    if(m_bDragRecord)
     {
-        sOutput = "enable drag failed";
-        ROS_ERROR("[RecordOrbit]%s",sOutput.c_str());
-        return false;
+        if(EliteDrag(ENABLE) == -1)
+        {
+            sOutput = "enable drag failed";
+            ROS_ERROR("[RecordOrbit]%s",sOutput.c_str());
+            return false;
+        }
     }
 
     ResetIni ResetInfo;
@@ -1936,12 +1951,129 @@ Others: void
 **************************************************/
 bool CEliteControl::StopOrbit(std::string &sOutput)
 {
-    if(EliteDrag(DISABLE) == -1)
+    if(m_bDragRecord)
     {
-        sOutput = "disable drag failed";
-        ROS_ERROR("[StopOrbit]%s",sOutput.c_str());
-        return false;
+        if(EliteDrag(DISABLE) == -1)
+        {
+            sOutput = "disable drag failed";
+            ROS_ERROR("[StopOrbit]%s",sOutput.c_str());
+            return false;
+        }
     }
+    else
+    {
+        m_bDragRecord = true;
+        elt_robot_pos OriginPos, targetPosTemp, targetPos;
+        memcpy(OriginPos, m_EltOriginPos, sizeof(OriginPos));
+        memcpy(targetPosTemp, m_EltOriginPos, sizeof(OriginPos));
+        memcpy(targetPos, m_EliteCurrentPos, sizeof(targetPos));
+
+        int nType = m_nPlayType;
+        double dStepValue = m_dMultiPointStep;
+
+        string sOriginData;
+        for(int i=0; i<ROBOT_POSE_SIZE; i++)
+        {
+            sOriginData.append(to_string(m_EltOriginPos[i]));
+            if(i != ROBOT_POSE_SIZE - 1)
+            {
+                sOriginData.append(" ");
+            }
+        }
+        sOriginData.append("\n");
+        m_TrackFile.Output(sOriginData);
+
+
+        //对目标只做线性差值
+        if(nType == 1) //6轴同时逼近
+        {
+            while(ros::ok())
+            {
+                int nCount = 0;
+                string sPosData;
+                for(int i=0; i<ROBOT_POSE_SIZE; i++)
+                {
+                    if(targetPos[i] - OriginPos[i] >= 0)
+                    {
+                        targetPosTemp[i] += dStepValue;
+                        if(targetPosTemp[i] - targetPos[i] > 0.001)
+                        {
+                            targetPosTemp[i] = targetPos[i];
+                            nCount++;
+                        }
+                    }
+                    else
+                    {
+                        targetPosTemp[i] -= dStepValue;
+                        if(targetPosTemp[i] - targetPos[i] < 0.001)
+                        {
+                            targetPosTemp[i] = targetPos[i];
+                            nCount++;
+                        }
+                    }
+
+                    sPosData.append(to_string(targetPosTemp[i]));
+                    if(i != ROBOT_POSE_SIZE - 1)
+                    {
+                        sPosData.append(" ");
+                    }
+                }
+
+                sPosData.append("\n");
+                m_TrackFile.Output(sPosData);
+                if(nCount == ROBOT_POSE_SIZE)
+                {
+                    ROS_INFO("[EliteMultiPointMove] add way point done");
+                    break;
+                }
+            }
+        }
+        else
+        {
+            for(int i=0; i<6; i++)
+            {
+                while(ros::ok())
+                {
+                    if(targetPos[i] - OriginPos[i] >= 0)
+                    {
+                        targetPosTemp[i] += dStepValue;
+                        if(targetPosTemp[i] - targetPos[i] > 0.001)
+                        {
+                            targetPosTemp[i] = targetPos[i];
+                        }
+                    }
+                    else
+                    {
+                        targetPosTemp[i] -= dStepValue;
+                        if(targetPosTemp[i] - targetPos[i] < 0.001)
+                        {
+                            targetPosTemp[i] = targetPos[i];
+                        }
+                    }
+
+                    string sPosData;
+                    for(int j=0; j<ROBOT_POSE_SIZE; j++)
+                    {
+                        sPosData.append(to_string(targetPosTemp[j]));
+                        if(j != ROBOT_POSE_SIZE - 1)
+                        {
+                            sPosData.append(" ");
+                        }
+                    }
+                    sPosData.append("\n");
+                    m_TrackFile.Output(sPosData);
+
+//                    PrintJointData(targetPosTemp, "EliteMultiPointMove");
+
+                    if(abs(targetPosTemp[i] - targetPos[i]) <= 0.0001)
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     if(m_TrackFile.CloseFile() == -1)
     {
         sOutput = "close file failed";
