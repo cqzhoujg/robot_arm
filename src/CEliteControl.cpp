@@ -9,7 +9,6 @@ extern bool bExit;
 CEliteControl::CEliteControl():
     m_bRecordDragTrack(false),
     m_bBusy(false),
-    m_bIsRecordReset(false),
     m_bEmeStop(false),
     m_bArmInit(false),
     m_bResetFromNearestPoint(true),
@@ -18,9 +17,10 @@ CEliteControl::CEliteControl():
     m_nEliteMode(Remote),
     m_nTaskName(IDLE),
     m_sOrbitFileName("arm_orbit.txt"),
-    m_sResetFile("arm_reset.txt"),
-    m_sResetOrbitFile("null"),
-    m_sStatus("idle")
+    m_sResetIniFile("arm_reset.ini"),
+    m_sStatus("idle"),
+    m_sOrbitGroup("null"),
+    m_sOrbitSecurity("0")
 {
     ros::NodeHandle PublicNodeHandle;
     ros::NodeHandle PrivateNodeHandle("~");
@@ -40,6 +40,8 @@ CEliteControl::CEliteControl():
     PrivateNodeHandle.param("arm_origin", m_sArmOrigin, std::string("0,-150,130,-160,90,0"));
     PrivateNodeHandle.param("debug_teach", m_nDebugTeach, 0);
     PrivateNodeHandle.param("filter_value", m_dFilterValue, 20.0);
+    PrivateNodeHandle.param("play_type", m_nPlayType, 1);
+    PrivateNodeHandle.param("multi_point_step", m_dMultiPointStep, 1.5);
 
     PublicNodeHandle.param("arm_service", m_sArmService, std::string("arm_control"));
     PublicNodeHandle.param("arm_cmd", m_sArmCmdTopic, std::string("arm_cmd"));
@@ -63,6 +65,8 @@ CEliteControl::CEliteControl():
     ROS_INFO("[ros param] arm_origin:%s", m_sArmOrigin.c_str());
     ROS_INFO("[ros param] debug_teach:%d", m_nDebugTeach);
     ROS_INFO("[ros param] filter_value:%f", m_dFilterValue);
+    ROS_INFO("[ros param] play_type:%d", m_nPlayType);
+    ROS_INFO("[ros param] multi_point_step:%f", m_dMultiPointStep);
 
     ROS_INFO("[ros param] arm_service:%s", m_sArmService.c_str());
     ROS_INFO("[ros param] arm_cmd:%s", m_sArmCmdTopic.c_str());
@@ -71,10 +75,26 @@ CEliteControl::CEliteControl():
     ROS_INFO("[ros param] arm_abnormal:%s", m_sAbnormalTopic.c_str());
     ROS_INFO("[ros param] agv_status:%s", m_sAgvStatusTopic.c_str());
 
+
+    m_tRecordDataTime.tv_sec = 0;
+    m_tRecordDataTime.tv_nsec = 0;
+    m_sResetIniFile = m_sArmTrackPath+m_sResetIniFile;
+
     if(-1 == CreateDataPath())
     {
         ROS_ERROR("[CEliteControl] create data path failed");
         exit(-1);
+    }
+    if(access((m_sResetIniFile).c_str(), 0) != 0)
+    {
+        m_ResetInfo.nValid = 0;
+        m_ResetInfo.sOrbitFile = "null";
+        m_ResetInfo.nPlayFirstAxis = 0;
+        if(!RecordResetInfoToIni(m_sResetIniFile, m_ResetInfo))
+        {
+            ROS_ERROR("[CEliteControl] initialize write reset ini file failed");
+            exit(-1);
+        }
     }
 
     double dTimeout = 60.0;
@@ -96,10 +116,6 @@ CEliteControl::CEliteControl():
         UnInit();
         exit(-1);
     }
-
-    m_tRecordDataTime.tv_sec = 0;
-    m_tRecordDataTime.tv_nsec = 0;
-    m_sResetFile = m_sArmTrackPath+m_sResetFile;
 
     m_ArmService = PublicNodeHandle.advertiseService(m_sArmService, &CEliteControl::ArmServiceFunc, this);
 
@@ -278,15 +294,7 @@ void CEliteControl::UpdateEliteThreadFunc()
     int ret;
     elt_error err;
     elt_robot_pos OldRecordPos, LastPos;
-    std::unique_lock<std::mutex> Lock(m_ResetFileMutex);
-    if(m_ResetFile.OpenFile(m_sResetFile, O_CREAT | O_RDWR) == -1)
-    {
-        ROS_ERROR("[UpdateEliteThreadFunc] open reset file error:%s", m_sResetFile.c_str());
-        UnInit();
-        exit(-1);
-    }
-    Lock.unlock();
-    m_bWriteOrigin = true;
+    bool bWriteOrigin = true;
 
     memset(OldRecordPos, 0, sizeof(OldRecordPos));
     memset(&LastPos, 0, sizeof(LastPos));
@@ -360,13 +368,24 @@ void CEliteControl::UpdateEliteThreadFunc()
         }
         sAxisData.append("\n");
 
-        if(CheckOrigin(LastPos) && !CheckOrigin(m_EliteCurrentPos))
-        {
-            m_bIsRecordReset = true;
-        }
-
         if(m_bRecordDragTrack)
         {
+            if(bWriteOrigin)
+            {
+                bWriteOrigin = false;
+                string sOriginData;
+                for(int i=0; i<ROBOT_POSE_SIZE; i++)
+                {
+                    sOriginData.append(to_string(m_EltOriginPos[i]));
+                    if(i != ROBOT_POSE_SIZE - 1)
+                    {
+                        sOriginData.append(" ");
+                    }
+                }
+                sOriginData.append("\n");
+                m_TrackFile.Output(sOriginData);
+            }
+
             //轨迹记录超时检测
             if(m_tRecordDataTime.tv_sec != 0 && m_tRecordDataTime.tv_nsec != 0)
             {
@@ -398,26 +417,9 @@ void CEliteControl::UpdateEliteThreadFunc()
                 memcpy(OldRecordPos, m_EliteCurrentPos, sizeof(OldRecordPos));
             }
         }
-
-        if(m_bIsRecordReset && m_nTaskName != RESET && m_nTaskName != ROTATE && bIsWrite)
+        else
         {
-            if(m_bWriteOrigin)
-            {
-                string sOriginData;
-                for(int i=0; i<ROBOT_POSE_SIZE; i++)
-                {
-                    sOriginData.append(to_string(m_EltOriginPos[i]));
-                    if(i != ROBOT_POSE_SIZE - 1)
-                    {
-                        sOriginData.append(" ");
-                    }
-                }
-                sOriginData.append("\n");
-                m_ResetFile.Output(sOriginData);
-                m_bWriteOrigin = false;
-            }
-            m_ResetFile.Output(sAxisData);
-            memcpy(OldRecordPos, m_EliteCurrentPos, sizeof(OldRecordPos));
+            bWriteOrigin = true;
         }
 
         memcpy(LastPos, m_EliteCurrentPos, sizeof(LastPos));
@@ -531,7 +533,7 @@ void CEliteControl::HeartBeatThreadFunc()
 
         //是否有轨迹
         string sOrbitFileExist;
-        if(access((m_sArmTrackPath + m_sOrbitFileName).c_str(), 0) == 0 || access(m_sResetOrbitFile.c_str(), 0) == 0)
+        if(access((m_sArmTrackPath + m_sOrbitFileName).c_str(), 0) == 0 || access(m_ResetInfo.sOrbitFile.c_str(), 0) == 0)
         {
             sOrbitFileExist = "true";
         }
@@ -666,16 +668,17 @@ Description: 根据目标位置及当前位置插补出平滑轨迹点,并调用
 Input: elt_robot_pos &targetPos 目标距离
        double dSpeed 移动速度
        string &sErr 错误返回信息
+       int nType, 插补类型：0为单个轴同时逼近, 1为6个轴同时逼近
 Output: 1, 成功
        -1, 失败
 Others: void
 **************************************************/
-int CEliteControl::EliteMultiPointMove(elt_robot_pos &targetPos, double dSpeed, string &sErrMsg)
+int CEliteControl::EliteMultiPointMove(elt_robot_pos &targetPos, double dSpeed, string &sErrMsg, int nType)
 {
     ROS_INFO("[EliteMultiPointMove] start");
     elt_error err;
     int ret;
-    double dStepValue = m_dOrbitStep;
+    double dStepValue = m_dMultiPointStep;
 
     //6轴运动限位检测，防止报警
     for(int i=0; i<6 ;i++)
@@ -714,29 +717,35 @@ int CEliteControl::EliteMultiPointMove(elt_robot_pos &targetPos, double dSpeed, 
 //    PrintJointData(targetPos, "targetPos");
 
     //对目标只做线性差值
-    for(int i=0; i<6; i++)
+    if(nType == 1)
     {
         while(ros::ok())
         {
-            if(targetPos[i] - currentPos[i] >= 0)
+            int nCount = 0;
+            for(int i=0; i<ROBOT_POSE_SIZE; i++)
             {
-                targetPosTemp[i] += dStepValue;
-                if(targetPosTemp[i] - targetPos[i] > 0.001)
+                if(targetPos[i] - currentPos[i] >= 0)
                 {
-                    targetPosTemp[i] = targetPos[i];
+                    targetPosTemp[i] += dStepValue;
+                    if(targetPosTemp[i] - targetPos[i] > 0.001)
+                    {
+                        targetPosTemp[i] = targetPos[i];
+                        nCount++;
+                    }
                 }
-            }
-            else
-            {
-                targetPosTemp[i] -= dStepValue;
-                if(targetPosTemp[i] - targetPos[i] < 0.001)
+                else
                 {
-                    targetPosTemp[i] = targetPos[i];
+                    targetPosTemp[i] -= dStepValue;
+                    if(targetPosTemp[i] - targetPos[i] < 0.001)
+                    {
+                        targetPosTemp[i] = targetPos[i];
+                        nCount++;
+                    }
                 }
             }
 
             ret = elt_add_waypoint( m_eltCtx, targetPosTemp, &err);
-//            PrintJointData(targetPosTemp, "EliteMultiPointMove");
+//        PrintJointData(targetPosTemp, "EliteMultiPointMove");
 
             if (ret != ELT_SUCCESS)
             {
@@ -744,9 +753,49 @@ int CEliteControl::EliteMultiPointMove(elt_robot_pos &targetPos, double dSpeed, 
                 ROS_ERROR("[EliteMultiPointMove] add way point err code: %d,err message: %s", err.code, err.err_msg);
                 return -1;
             }
-            if(abs(targetPosTemp[i] - targetPos[i]) <= 0.0001)
+            if(nCount == ROBOT_POSE_SIZE)
             {
+                ROS_INFO("[EliteMultiPointMove] add way point done");
                 break;
+            }
+        }
+    }
+    else
+    {
+        for(int i=5; i>-1; i--)
+        {
+            while(ros::ok())
+            {
+                if(targetPos[i] - currentPos[i] >= 0)
+                {
+                    targetPosTemp[i] += dStepValue;
+                    if(targetPosTemp[i] - targetPos[i] > 0.001)
+                    {
+                        targetPosTemp[i] = targetPos[i];
+                    }
+                }
+                else
+                {
+                    targetPosTemp[i] -= dStepValue;
+                    if(targetPosTemp[i] - targetPos[i] < 0.001)
+                    {
+                        targetPosTemp[i] = targetPos[i];
+                    }
+                }
+
+                ret = elt_add_waypoint( m_eltCtx, targetPosTemp, &err);
+//            PrintJointData(targetPosTemp, "EliteMultiPointMove");
+
+                if (ret != ELT_SUCCESS)
+                {
+                    sErrMsg.append("elt add way point error");
+                    ROS_ERROR("[EliteMultiPointMove] add way point err code: %d,err message: %s", err.code, err.err_msg);
+                    return -1;
+                }
+                if(abs(targetPosTemp[i] - targetPos[i]) <= 0.0001)
+                {
+                    break;
+                }
             }
         }
     }
@@ -908,16 +957,16 @@ int CEliteControl::EliteDrag(int nCmd)
 /*************************************************
 Function: CEliteControl::EliteRunDragTrack
 Description: 复现拖拽轨迹
-Input: string &sFileName 轨迹文件名称
-        double dSpeed, 运动速度
-        int nDirection, 播放轨迹的方向
-        string &sErrMsg, 播放失败的反馈信息
-        string sPlayFirstAxis, 是否播放第一轴
+Input: string &sFileName, 轨迹文件名称
+       int nPlayFirstAxis, 是否播放一轴
+       double dSpeed, 运动速度
+       int nDirection, 播放轨迹的方向
+       string &sErrMsg, 播放失败的反馈信息
 Output:  1, 成功
         -1, 失败
 Others: void
 **************************************************/
-int CEliteControl::EliteRunDragTrack(const string &sFileName, double dSpeed, int nDirection, string &sErrMsg, string sPlayFirstAxis)
+int CEliteControl::EliteRunDragTrack(const string &sFileName, int nPlayFirstAxis, double dSpeed, int nDirection, string &sErrMsg)
 {
     ROS_INFO("[EliteRunDragTrack] start");
     elt_error err;
@@ -971,7 +1020,7 @@ int CEliteControl::EliteRunDragTrack(const string &sFileName, double dSpeed, int
             trackFile >> targetPos.eltPos[i];
         }
 
-        if(sPlayFirstAxis == "0")
+        if(nPlayFirstAxis == 0)
         {
             targetPos.eltPos[0] = m_EliteCurrentPos[0];
         }
@@ -1084,6 +1133,17 @@ int CEliteControl::EliteRunDragTrack(const string &sFileName, double dSpeed, int
         }
     }
 
+    if(nPlayFirstAxis == 0 && nDirection == REVERSE)
+    {
+        ret = elt_add_waypoint( m_eltCtx, m_EltOriginPos, &err);
+        if (ret != ELT_SUCCESS)
+        {
+            sErrMsg = "add way point err";
+            ROS_INFO("[EliteRunDragTrack] %s,err code: %d,err message: %s",sErrMsg.c_str(), err.code, err.err_msg);
+            return -1;
+        }
+    }
+
     //执行轨迹
     int nMoveType = 0;
     ret = elt_track_move( m_eltCtx, nMoveType, m_nSmoothnessLevel, &err);
@@ -1185,47 +1245,26 @@ bool CEliteControl::EliteGotoOrigin(string &sOutput)
             m_bResetFromNearestPoint = false;
         return true;
     }
-    m_bIsRecordReset = false;
 
-    std::unique_lock<std::mutex> Lock(m_ResetFileMutex);
-    if(m_ResetFile.CloseFile() == -1)
+    if(!GetResetInfoFromIni(m_sResetIniFile, m_ResetInfo))
     {
-        ROS_ERROR("[EliteGotoOrigin] close reset file error:%s", m_sResetFile.c_str());
-        UnInit();
-        exit(-1);
+        sOutput = "get reset info from ini failed";
+        ROS_ERROR("[EliteGotoOrigin] %s",sOutput.c_str());
+        return false;
     }
-
-    if(EliteRunDragTrack(m_sResetFile, m_dEltSpeed, REVERSE, sOutput) == -1)
+    if(m_ResetInfo.nValid == 0)
     {
-        if(sOutput == "empty")
-        {
-            sOutput = "";
-            if(EliteMultiPointMove(m_EltOriginPos, m_dEltSpeed, sOutput) == -1)
-            {
-                ROS_ERROR("[EliteGotoOrigin]%s",sOutput.c_str());
-                return false;
-            }
-
-            if(!WaitForMotionStop(m_nTimeoutLen, sOutput))
-            {
-                ROS_ERROR("[EliteGotoOrigin]%s",sOutput.c_str());
-                return false;
-            }
-            if(!CheckOrigin(m_EliteCurrentPos))
-            {
-                sOutput = "reset motion done, but did not reach the origin";
-                ROS_ERROR("[EliteGotoOrigin]%s",sOutput.c_str());
-                return false;
-            }
-        }
-        else
+        if(EliteMultiPointMove(m_EltOriginPos, m_dEltSpeed, sOutput) == -1)
         {
             ROS_ERROR("[EliteGotoOrigin]%s",sOutput.c_str());
             return false;
         }
-
     }
-
+    else if(EliteRunDragTrack(m_ResetInfo.sOrbitFile, m_ResetInfo.nPlayFirstAxis, m_dEltSpeed, REVERSE, sOutput) == -1)
+    {
+        ROS_ERROR("[EliteGotoOrigin]%s",sOutput.c_str());
+        return false;
+    }
 
     if(!WaitForMotionStop(m_nTimeoutLen, sOutput))
     {
@@ -1240,19 +1279,19 @@ bool CEliteControl::EliteGotoOrigin(string &sOutput)
     }
     else
     {
-        //清空复位轨迹文件
-        if(m_ResetFile.OpenFile(m_sResetFile, O_CREAT | O_TRUNC | O_RDWR) == -1)
-        {
-            ROS_ERROR("[EliteGotoOrigin] open reset file error:%s", m_sResetFile.c_str());
-            return false;
-        }
-        m_bWriteOrigin = true;
-
         if(m_bResetFromNearestPoint)
             m_bResetFromNearestPoint = false;
-    }
 
-    Lock.unlock();
+        m_sOrbitGroup.clear();
+
+        m_ResetInfo.nValid = 0;
+        if(!RecordResetInfoToIni(m_sResetIniFile, m_ResetInfo))
+        {
+            sOutput = "record reset info to ini failed";
+            ROS_ERROR("[EliteGotoOrigin]%s",sOutput.c_str());
+            return false;
+        }
+    }
 
     return true;
 }
@@ -1792,7 +1831,12 @@ bool CEliteControl::ArmOperation(const std::string &sCommand, const std::string 
     }
     else if(sCommand == "stop_teach")
     {
-        return StopRotate(sOutput);
+        if(EliteStop(sOutput) == -1)
+        {
+            sOutput.append(",stop failed");
+            ROS_ERROR("[StopRotate]%s",sOutput.c_str());
+            return false;
+        }
     }
     else
     {
@@ -1864,7 +1908,18 @@ bool CEliteControl::RecordOrbit(const std::string &sInput, std::string &sOutput)
         ROS_ERROR("[RecordOrbit]%s",sOutput.c_str());
         return false;
     }
-    m_sResetOrbitFile = sTrackFile;
+
+    ResetIni ResetInfo;
+    ResetInfo.sOrbitFile = sTrackFile;
+    ResetInfo.nPlayFirstAxis = 1;
+    ResetInfo.nValid = 1;
+    if(!RecordResetInfoToIni(m_sResetIniFile, ResetInfo))
+    {
+        sOutput.append(", save the reset info to ini failed");
+        ROS_ERROR("[PlayOrbit]%s",sOutput.c_str());
+        return false;
+    }
+
     sOutput = sTrackFile;
     m_nTaskName = RECORD;
 
@@ -1913,7 +1968,7 @@ Others: void
 **************************************************/
 bool CEliteControl::PlayOrbit(const std::string &sInput, std::string &sOutput)
 {
-    string sTrackFile, sPlayFirstAxis;
+    string sTrackFile, sRobotOrientation;
     vector<string> vCmdList;
     boost::split(vCmdList, sInput, boost::is_any_of(","), boost::token_compress_on);
     if(vCmdList.size() != 2)
@@ -1924,29 +1979,30 @@ bool CEliteControl::PlayOrbit(const std::string &sInput, std::string &sOutput)
     }
 
     sTrackFile = vCmdList[0];
-    sPlayFirstAxis = vCmdList[1];
+    sRobotOrientation = vCmdList[1];
 
-    if(sPlayFirstAxis == "0")
+    double dRobotOrientation = stod(sRobotOrientation)/M_PI*180;
+    double dAngleDiff =  dRobotOrientation - m_dRobotOrientation;
+    int nPlayContain1stAxis = dAngleDiff < 0.1 ? 1 : 0;
+
+    vector<string> vGroupInfoList;
+    boost::split(vGroupInfoList, sTrackFile, boost::is_any_of("/"), boost::token_compress_on);
+    if(vGroupInfoList.size() < 2)
     {
-        int nOrigin = 0;
-        elt_robot_pos CurrentPos;
-        memcpy(CurrentPos, m_EliteCurrentPos, sizeof(CurrentPos));
-        for(int i=1; i<6; i++)
-        {
-            if(abs(CurrentPos[i] - m_EltOriginPos[i]) < 0.1)
-            {
-                nOrigin++;
-            }
-        }
-
-        if(nOrigin != 5)
-        {
-            sOutput = "play orbit excepting 1st axis, the other axis is not at origin";
-            ROS_ERROR("[PlayOrbit]%s",sOutput.c_str());
-            return false;
-        }
+        sOutput = "input group info error" + sInput;
+        ROS_ERROR("[PlayOrbit]%s",sOutput.c_str());
+        return false;
     }
-    else
+    uint64_t nSize = vGroupInfoList.size();
+    string sOrbitInfo = vGroupInfoList[nSize-2];
+    ROS_INFO("sOrbitInfo:%s", sOrbitInfo.c_str());
+
+    string sGroup = sOrbitInfo.substr(0, sOrbitInfo.find_last_of('-'));
+    string sSecurity = sOrbitInfo.substr(sOrbitInfo.find_last_of('-')+1);
+
+    ROS_INFO("sGroup:%s, sSecurity:%s", sGroup.c_str(), sSecurity.c_str());
+
+    if(m_sOrbitGroup != sGroup || m_sOrbitSecurity != sSecurity || "1" != sSecurity)
     {
         bool bHasReset = !CheckOrigin(m_EliteCurrentPos);
         if(!ResetToOrigin(sOutput))
@@ -1960,33 +2016,89 @@ bool CEliteControl::PlayOrbit(const std::string &sInput, std::string &sOutput)
             this_thread::sleep_for(std::chrono::milliseconds(200));
         }
     }
-    
+
+    if(CheckOrigin(m_EliteCurrentPos))
+    {
+        if(nPlayContain1stAxis == 0)
+        {
+            elt_robot_pos targetPos;
+            if(!GetOrbitEndPoint(sTrackFile, targetPos, sOutput))
+            {
+                ROS_ERROR("[PlayOrbit]%s", sOutput.c_str());
+                return false;
+            }
+
+            string sSetYawInput = to_string((targetPos[0] - dAngleDiff) * 100);
+            ROS_INFO("[PlayOrbit] targetPos[0]:%f, dAngleDiff:%f, sSetYawInput:%s", targetPos[0], dAngleDiff, sSetYawInput.c_str());
+            if(!SetYawAngle(sSetYawInput, sOutput))
+            {
+                ROS_ERROR("[PlayOrbit]%s", sOutput.c_str());
+                return false;
+            }
+        }
+
+        if(sTrackFile.empty() || sTrackFile == "null" || sTrackFile == " ")
+        {
+            sTrackFile = m_sArmTrackPath + m_sOrbitFileName;
+        }
+
+        if (access(sTrackFile.c_str(), 0))
+        {
+            sOutput = "orbit file is null";
+            ROS_ERROR("[PlayOrbit]%s", sOutput.c_str());
+            return false;
+        }
+
+        if (EliteRunDragTrack(sTrackFile, nPlayContain1stAxis, m_dEltSpeed, FORWARD, sOutput) == -1)
+        {
+            ROS_ERROR("[PlayOrbit]%s", sOutput.c_str());
+            return false;
+        }
+    }
+    else
+    {
+        elt_robot_pos targetPos;
+        if(!GetOrbitEndPoint(sTrackFile, targetPos, sOutput))
+        {
+            ROS_ERROR("[PlayOrbit]%s", sOutput.c_str());
+            return false;
+        }
+
+        if(nPlayContain1stAxis == 0)
+        {
+            targetPos[0] -= dAngleDiff;
+            PrintJointData(targetPos, "PlayOrbit");
+        }
+
+        int nType = m_nPlayType;//六轴同时逼近
+        if(EliteMultiPointMove(targetPos, m_dEltSpeed, sOutput, nType) == -1)
+        {
+            sOutput.append(", play orbit failed");
+            ROS_ERROR("[PlayOrbit]%s",sOutput.c_str());
+            return false;
+        }
+    }
+
+    m_sOrbitGroup = sGroup;
+    m_sOrbitSecurity = sSecurity;
+
+    ResetIni ResetInfo;
+    ResetInfo.sOrbitFile = sTrackFile;
+    ResetInfo.nPlayFirstAxis = nPlayContain1stAxis;
+    ResetInfo.nValid = 1;
+    if(!RecordResetInfoToIni(m_sResetIniFile, ResetInfo))
+    {
+        sOutput.append(", save the reset info to ini failed");
+        ROS_ERROR("[PlayOrbit]%s",sOutput.c_str());
+        return false;
+    }
+
     m_nTaskName = PLAY;
-
-    if(sTrackFile.empty() || sTrackFile == "null" || sTrackFile == " ")
-    {
-        sTrackFile = m_sArmTrackPath + m_sOrbitFileName;
-    }
-
-    if (access(sTrackFile.c_str(), 0))
-    {
-        sOutput = "orbit file is null";
-        ROS_ERROR("[PlayOrbit]%s", sOutput.c_str());
-        return false;
-    }
-
-    if (EliteRunDragTrack(sTrackFile, m_dEltSpeed, FORWARD, sOutput, sPlayFirstAxis) == -1)
-    {
-        ROS_ERROR("[PlayOrbit]%s", sOutput.c_str());
-        return false;
-    }
 
     if(!WaitForMotionStop(m_nTimeoutLen, sOutput))
     {
         return false;
     }
-
-    m_sResetOrbitFile = sTrackFile;
 
     memcpy(m_RotateOriginPos, m_EliteCurrentPos, sizeof(m_RotateOriginPos));
     ROS_INFO("[PlayOrbit] update rotate origin");
@@ -2317,7 +2429,6 @@ bool CEliteControl::Reset(std::string &sOutput)
         ROS_ERROR("[Reset]%s",sOutput.c_str());
         return false;
     }
-    m_sResetOrbitFile = "null";
 
     if(m_nDragStatus == ENABLE)
     {
@@ -2397,12 +2508,7 @@ bool CEliteControl::SetYawAngle(const std::string &sInput, std::string &sOutput)
         return false;
     }
 
-    if(!WaitForMotionStop(m_nTimeoutLen, sOutput))
-    {
-        return false;
-    }
-
-    return true;
+    return WaitForMotionStop(m_nTimeoutLen, sOutput);
 }
 
 /*************************************************
@@ -2571,6 +2677,7 @@ Others: void
 void CEliteControl::AgvStatusCallBack(const wootion_msgs::RobotStatus::ConstPtr &AgvStatus)
 {
     bool bEmeStop = ((AgvStatus->warn_status[3] & 0x01) > 0);
+    m_dRobotOrientation = AgvStatus->orientation/M_PI*180;
     if(m_bEmeStop && !bEmeStop)
     {
         //清除报警，3次重试。
@@ -2788,6 +2895,108 @@ void CEliteControl::RemoveOverduePoints(deque<EltPos> &trackDeque)
     }
     ROS_INFO("[RemoveOverduePoints] current point:%s", sCurrentPos.c_str());
     ROS_INFO("[RemoveOverduePoints] reset start point:%s", sStartPos.c_str());
+}
+
+/*************************************************
+Function: CEliteControl::RecordResetInfoToIni
+Description: 记录复位所需要的轨迹等相关信息
+Input: string sFileName, ini文件名称
+       ResetIni resetInfo, ini中的信息内容结构体
+Output: true, 成功
+        false, 失败
+Others: void
+**************************************************/
+bool CEliteControl::RecordResetInfoToIni(const string sFileName, const ResetIni resetInfo)
+{
+    ROS_INFO("[RecordResetInfoToIni] start");
+    try
+    {
+        //读取ini中的配置
+        boost::property_tree::ptree IniWR;
+        IniWR.put<string>("Info.orbit_file", resetInfo.sOrbitFile);
+        IniWR.put<int>("Info.played_first_axis", resetInfo.nPlayFirstAxis);
+        IniWR.put<int>("Info.valid", resetInfo.nValid);
+        boost::property_tree::ini_parser::write_ini(sFileName, IniWR);
+    }
+    catch(std::exception& e)
+    {
+        ROS_WARN("[RecordResetInfoToIni] write ini error: %s",e.what());
+        return false;
+    }
+
+    ROS_INFO("[RecordResetInfoToIni] end");
+    return true;
+}
+
+/*************************************************
+Function: CEliteControl::GetResetInfoFromIni
+Description: 获取复位所需要的轨迹等相关信息
+Input: string sFileName, ini文件名称
+       ResetIni resetInfo, ini中的信息内容结构体
+Output: true, 成功
+        false, 失败
+Others: void
+**************************************************/
+bool CEliteControl::GetResetInfoFromIni(const string sFileName, ResetIni &resetInfo)
+{
+    ROS_INFO("[GetResetInfoFromIni] start");
+    try
+    {
+        boost::property_tree::ptree IniWR;
+        boost::property_tree::ini_parser::read_ini(sFileName, IniWR);
+        boost::property_tree::basic_ptree<string, string> InfoItems = IniWR.get_child("Info");
+
+        //读取ini中的配置
+        resetInfo.sOrbitFile = InfoItems.get<string>("orbit_file");
+        resetInfo.nPlayFirstAxis = InfoItems.get<int>("played_first_axis");
+        resetInfo.nValid = InfoItems.get<int>("valid");
+
+        ROS_INFO("[GetResetInfoFromIni] ini file:%s", sFileName.c_str());
+        ROS_INFO("[GetResetInfoFromIni] sOrbitFile:%s, nPlayFirstAxis:%d, nValid:%d", \
+                  resetInfo.sOrbitFile.c_str(), resetInfo.nPlayFirstAxis, resetInfo.nValid);
+    }
+    catch (std::exception& e)
+    {
+        ROS_WARN("[GetResetInfoFromIni] read ini error: %s",e.what());
+        return false;
+    }
+    ROS_INFO("[GetResetInfoFromIni] end");
+    return true;
+}
+
+/*************************************************
+Function: CEliteControl::GetOrbitEndPoint
+Description: 获取轨迹的终点信息
+Input: string sFileName, 轨迹文件名称
+       elt_robot_pos &dEndPoint, 轨迹文件中的终点信息输出
+Output: true, 成功
+        false, 失败
+Others: void
+**************************************************/
+bool CEliteControl::GetOrbitEndPoint(const string sFileName, elt_robot_pos &dEndPoint, std::string &sOutput)
+{
+    ifstream trackFile;
+
+    //打开轨迹文件
+    trackFile.open(sFileName.c_str(), ios::in);
+    if (!trackFile.is_open())
+    {
+        trackFile.close();
+        sOutput = "cannot open orbit file:";
+        sOutput.append(sFileName);
+        return false;
+    }
+
+    while (!trackFile.eof())
+    {
+        for(int i=0; i< ROBOT_POSE_SIZE; i++)
+        {
+            trackFile >> dEndPoint[i];
+        }
+    }
+    trackFile.close();
+    PrintJointData(dEndPoint, "PlayOrbit");
+    return true;
 }
 
 CEliteControl::~CEliteControl()

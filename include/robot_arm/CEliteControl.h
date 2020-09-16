@@ -25,6 +25,7 @@
 #include <boost/algorithm/string.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/json_parser.hpp>
+#include <boost/property_tree/ini_parser.hpp>
 #include "ros/ros.h"
 #include "elt_ctx.h"
 #include "elt_robot.h"
@@ -140,6 +141,13 @@ const static double AxisLimitAngle[12] = {
    -358.0, -358.0, -158.0, -358.0, -358.0, -358.0
 };
 
+typedef struct _tagResetIni
+{
+	string sOrbitFile;
+	int nPlayFirstAxis;
+	int nValid;
+} ResetIni, *PResetIni;
+
 class CEliteControl
 {
 public:
@@ -159,11 +167,11 @@ public:
 
     int UpdateEltOrigin();
     int EliteJointMove(elt_robot_pos &targetPos, double dSpeed, string &sErr);
-    int EliteMultiPointMove(elt_robot_pos &targetPos, double dSpeed, string &sErrMsg);
+    int EliteMultiPointMove(elt_robot_pos &targetPos, double dSpeed, string &sErrMsg, int nType=0);
     int GetElitePos(elt_robot_pos &pos_array);
     int EliteStop(string &sErr);
     int EliteDrag(int nCmd);
-    int EliteRunDragTrack(const string &sFileName, double dSpeed, int nDirection, string &sErrMsg, string sPlayFirstAxis = "1");
+    int EliteRunDragTrack(const string &sFileName, int nPlayFirstAxis, double dSpeed, int nDirection, string &sErrMsg);
     int EliteSyncMotorStatus(bool bSwitchStatusFirst=true);
     int EliteClearAlarm();
     int EliteOpenServo();
@@ -191,6 +199,9 @@ public:
     bool TurnAround(std::string &sOutput);
     bool GotoNewPos(const std::string &sInput, std::string &sOutput);
     bool VirtualTeach(const std::string &sInput, std::string &sOutput);
+	bool RecordResetInfoToIni(const string sFileName, const ResetIni resetInfo);
+	bool GetResetInfoFromIni(const string sFileName, ResetIni &resetInfo);
+	bool GetOrbitEndPoint(const string sFileName, elt_robot_pos &EndPoint, std::string &sOutput);
 
 private:
     string m_sNodeName;
@@ -203,11 +214,12 @@ private:
     string m_sHeartBeatTopic;
     string m_sAbnormalTopic;
     string m_sOrbitFileName;
-    string m_sResetFile;
-    string m_sResetOrbitFile;
+    string m_sResetIniFile;
     string m_sStatus;
     string m_sAgvStatusTopic;
     string m_sArmOrigin;
+    string m_sOrbitGroup;
+    string m_sOrbitSecurity;
 
     int m_nElitePort;
     int m_nEliteState;
@@ -218,11 +230,10 @@ private:
     int m_nEliteMode;
     int m_nSmoothnessLevel;
     int m_nDebugTeach;
+    int m_nPlayType;
 
     bool m_bRecordDragTrack;
     bool m_bBusy;
-    bool m_bIsRecordReset;
-    bool m_bWriteOrigin;
     bool m_bEmeStop;
     bool m_bArmInit;
     bool m_bResetFromNearestPoint;
@@ -232,6 +243,8 @@ private:
     double m_dRotateLimitAngle;
     double m_dOrbitStep;
     double m_dFilterValue;
+    double m_dMultiPointStep;
+    double m_dRobotOrientation;
 
     timespec m_tRecordDataTime;
 
@@ -254,9 +267,8 @@ private:
     ros::ServiceServer m_ArmService;
 
     CFileRW m_TrackFile;
-    CFileRW m_ResetFile;
 
-    std::mutex m_ResetFileMutex;
+	ResetIni m_ResetInfo;
 };
 
 #endif //PROJECT_CELITECONTROL_H
