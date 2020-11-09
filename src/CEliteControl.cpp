@@ -43,8 +43,10 @@ CEliteControl::CEliteControl():
     PrivateNodeHandle.param("filter_value", m_dFilterValue, 20.0);
     PrivateNodeHandle.param("play_type", m_nPlayType, 1);
     PrivateNodeHandle.param("multi_point_step", m_dMultiPointStep, 1.5);
+	PrivateNodeHandle.param("antenna_conflict_zone1", m_sAntennaConflictZone1, std::string("-60,0,300,360;-153"));
+	PrivateNodeHandle.param("antenna_conflict_zone2", m_sAntennaConflictZone2, std::string("80,150,-280,-210;-27"));
 
-    PublicNodeHandle.param("arm_service", m_sArmService, std::string("arm_control"));
+	PublicNodeHandle.param("arm_service", m_sArmService, std::string("arm_control"));
     PublicNodeHandle.param("arm_cmd", m_sArmCmdTopic, std::string("arm_cmd"));
     PublicNodeHandle.param("arm_ack", m_sArmAckTopic, std::string("arm_ack"));
     PublicNodeHandle.param("arm_heart", m_sHeartBeatTopic, std::string("arm_heart_beat"));
@@ -68,6 +70,8 @@ CEliteControl::CEliteControl():
     ROS_INFO("[ros param] filter_value:%f", m_dFilterValue);
     ROS_INFO("[ros param] play_type:%d", m_nPlayType);
     ROS_INFO("[ros param] multi_point_step:%f", m_dMultiPointStep);
+    ROS_INFO("[ros param] antenna_conflict_zone1:%s", m_sAntennaConflictZone1.c_str());
+    ROS_INFO("[ros param] antenna_conflict_zone2:%s", m_sAntennaConflictZone2.c_str());
 
     ROS_INFO("[ros param] arm_service:%s", m_sArmService.c_str());
     ROS_INFO("[ros param] arm_cmd:%s", m_sArmCmdTopic.c_str());
@@ -95,6 +99,71 @@ CEliteControl::CEliteControl():
         {
             ROS_ERROR("[CEliteControl] initialize write reset ini file failed");
             exit(-1);
+        }
+    }
+
+    //第1干涉区参数
+    std::vector<std::string> vsZone, vs1stZone1stAxis;
+    boost::split(vsZone, m_sAntennaConflictZone1, boost::is_any_of(";"), boost::token_compress_on);
+    if (vsZone.size() != 2)
+    {
+        ROS_ERROR("[CEliteControl] antenna conflict1 zone:%s not supported", m_sAntennaConflictZone1.c_str());
+        exit(-1);
+    }
+
+    boost::split(vs1stZone1stAxis, vsZone[0], boost::is_any_of(","), boost::token_compress_on);
+    m_dConflictZone1Axis2 = stoi(vsZone[1]);
+
+    if (vs1stZone1stAxis.size()%2 != 0 || vs1stZone1stAxis.size() < 2)
+    {
+        ROS_ERROR("[CEliteControl] antenna conflict1 zone:%s not supported", m_sAntennaConflictZone1.c_str());
+        exit(-1);
+    }
+
+    std::vector<std::string>::iterator it;
+    for (it = vs1stZone1stAxis.begin(); it != vs1stZone1stAxis.end(); ++it)
+    {
+        m_vdConflictZone1Axis1.emplace_back(std::stoi(*it));
+    }
+    unsigned long i;
+    for (i = 1; i < m_vdConflictZone1Axis1.size(); i+=2)
+    {
+        if (m_vdConflictZone1Axis1[i] <= m_vdConflictZone1Axis1[i-1])
+        {
+            ROS_ERROR("[CEliteControl] invalid antenna conflict1 zone data");
+			exit(-1);
+        }
+    }
+
+    //第2干涉区参数
+    vsZone.clear();
+    std::vector<std::string> vs2stZone1stAxis;
+    boost::split(vsZone, m_sAntennaConflictZone2, boost::is_any_of(";"), boost::token_compress_on);
+    if (vsZone.size() != 2)
+    {
+        ROS_ERROR("[CEliteControl] antenna conflict2 zone:%s not supported", m_sAntennaConflictZone2.c_str());
+        exit(-1);
+    }
+
+    boost::split(vs2stZone1stAxis, vsZone[0], boost::is_any_of(","), boost::token_compress_on);
+    m_dConflictZone2Axis2 = stoi(vsZone[1]);
+
+    if (vs2stZone1stAxis.size()%2 != 0 || vs2stZone1stAxis.size() < 2)
+    {
+        ROS_ERROR("[CEliteControl] antenna conflict2 zone:%s not supported", m_sAntennaConflictZone2.c_str());
+        exit(-1);
+    }
+
+    for (it = vs2stZone1stAxis.begin(); it != vs2stZone1stAxis.end(); ++it)
+    {
+        m_vdConflictZone2Axis1.emplace_back(std::stoi(*it));
+    }
+    for (i = 1; i < m_vdConflictZone2Axis1.size(); i+=2)
+    {
+        if (m_vdConflictZone2Axis1[i] <= m_vdConflictZone2Axis1[i-1])
+        {
+            ROS_ERROR("[CEliteControl] invalid antenna conflict2 zone data");
+			exit(-1);
         }
     }
 
@@ -239,7 +308,7 @@ bool CEliteControl::Init()
         return false;
     }
 
-    //打开伺服, 3次重试
+    //打开伺服, 10次重试
     if(EliteOpenServo() == -1)
     {
         ROS_ERROR("[Init] open elite servo failed");
@@ -669,7 +738,7 @@ Description: 根据目标位置及当前位置插补出平滑轨迹点,并调用
 Input: elt_robot_pos &targetPos 目标距离
        double dSpeed 移动速度
        string &sErr 错误返回信息
-       int nType, 插补类型：0为单个轴同时逼近, 1为6个轴同时逼近
+       int nType, 插补类型：0为单个轴分步逼近, 1为6个轴同时逼近
 Output: 1, 成功
        -1, 失败
 Others: void
@@ -1358,6 +1427,7 @@ int CEliteControl::EliteSyncMotorStatus(bool bSwitchStatusFirst)
         return -1;
     }
 
+    ROS_INFO("[EliteSyncMotorStatus] sync elt succeed");
     return 1;
 }
 
@@ -1382,7 +1452,7 @@ int CEliteControl::EliteOpenServo()
         return -1;
     }
 
-    while(nServoStatus == ELT_FALSE && nRetryTimes < 3)
+    while(nServoStatus == ELT_FALSE && nRetryTimes < 10)
     {
         //同步伺服编码器数据
         nRet = elt_set_servo_status(m_eltCtx, ENABLE, &err);
@@ -1392,7 +1462,7 @@ int CEliteControl::EliteOpenServo()
             ROS_INFO("[EliteOpenServo] set elt servo failed. nRet=%d, err.code=%d, err.msg=%s", nRet, err.code, err.err_msg);
             return -1;
         }
-        this_thread::sleep_for(std::chrono::milliseconds(1000));
+        this_thread::sleep_for(std::chrono::milliseconds(1500));
 
         nRet = elt_get_servo_status(m_eltCtx, &nServoStatus, &err);
         if (ELT_SUCCESS != nRet)
@@ -1411,6 +1481,7 @@ int CEliteControl::EliteOpenServo()
         return -1;
     }
 
+    ROS_INFO("[EliteOpenServo] open elt servo succeed");
     return 1;
 }
 
@@ -1457,7 +1528,7 @@ int CEliteControl::EliteClearAlarm()
         ROS_ERROR("[EliteClearAlarm] clear alarm failed");
         return -1;
     }
-    ROS_INFO("[EliteClearAlarm] elt status is normal");
+    ROS_INFO("[EliteClearAlarm] clear elt alarm succeed");
     return 1;
 }
 
@@ -1537,7 +1608,7 @@ bool CEliteControl::WaitForMotionStop(int nTimeoutTime, string &sErr)
     if(m_nEliteState != STOP)
     {
         sErr = "arm move error";
-        ROS_WARN("[WaitForMotionStop]output:%s", sErr.c_str());
+        ROS_WARN("[WaitForMotionStop] output:%s, m_nEliteState:%d", sErr.c_str(), m_nEliteState);
         return false;
     }
 
@@ -1747,15 +1818,31 @@ bool CEliteControl::ArmOperation(const std::string &sCommand, const std::string 
     if(sCommand == "play_orbit" || sCommand == "rotate" || sCommand == "reset" || sCommand == "set_orientation" \
         || sCommand == "set_yaw_angle" || sCommand == "set_position" || sCommand == "turn_around")
     {
+        //确认机械臂不处于报警状态
+        if(EliteClearAlarm() == -1)
+        {
+            sOutput = " clear elite alarm failed";
+            ROS_ERROR("[ArmOperation] clear elite alarm failed");
+            return false;
+        }
         if(m_nEliteState == STOP)
         {
             bool bSwitchStatusFirst = false;
             if(EliteSyncMotorStatus(bSwitchStatusFirst) == -1)
             {
                 sOutput = " sync elite motor status failed";
+                ROS_ERROR("[ArmOperation] sync elite motor status failed");
                 return false;
             }
         }
+        //打开伺服, 10次重试
+        if(EliteOpenServo() == -1)
+        {
+            sOutput = " open elite servo failed";
+            ROS_ERROR("[ArmOperation] open elite servo failed");
+            return false;
+        }
+
     }
 
     if(sCommand == "record_orbit")
@@ -2096,50 +2183,53 @@ Description: 播放拖拽记录的轨迹
 Input: std::string &sOutput, 处理结果反馈
 Output: true 成功
         false 失败
-Others: void
+Others: 机械臂轨迹文件的路径中包含分组及安全信息
+        track/group/000001-0/track-1-1.txt,
+        其中000001-0 在‘-’左右两边分别为组号及安全与否标志; 000001为组号;0表示不安全, 1表示安全
+        同组&&安全 才会直接运动插补过去，其他情况仍先返回原点再播放
 **************************************************/
 bool CEliteControl::PlayOrbit(const std::string &sInput, std::string &sOutput)
 {
-    string sTrackFile, sRobotOrientation;
+    string sTrackFile, sCalcRelativeAngle, sRobotPresetOrientation;
     vector<string> vCmdList;
     boost::split(vCmdList, sInput, boost::is_any_of(","), boost::token_compress_on);
-    if(vCmdList.size() != 2)
+    if(vCmdList.size() != 3)
     {
-        sOutput = "input error" + sInput;
+        sOutput = "input error: " + sInput;
         ROS_ERROR("[PlayOrbit]%s",sOutput.c_str());
         return false;
     }
 
     sTrackFile = vCmdList[0];
-    sRobotOrientation = vCmdList[1];
+    sCalcRelativeAngle = vCmdList[1];
+	sRobotPresetOrientation = vCmdList[2];
 
-    double dRobotOrientation = stod(sRobotOrientation)/M_PI*180;
-    double dAngleDiff =  dRobotOrientation - m_dRobotOrientation;
-    int nPlayContain1stAxis = dAngleDiff < 0.1 ? 1 : 0;
+    int nPlayContain1stAxis = 1;
+    double dAngleDiff = 0.0;
 
     vector<string> vGroupInfoList;
     boost::split(vGroupInfoList, sTrackFile, boost::is_any_of("/"), boost::token_compress_on);
     if(vGroupInfoList.size() < 2)
     {
-        sOutput = "input group info error" + sInput;
-        ROS_ERROR("[PlayOrbit]%s",sOutput.c_str());
+        sOutput = "input group info error: " + sInput;
+        ROS_ERROR("[PlayOrbit] %s",sOutput.c_str());
         return false;
     }
     uint64_t nSize = vGroupInfoList.size();
     string sOrbitInfo = vGroupInfoList[nSize-2];
-    ROS_INFO("sOrbitInfo:%s", sOrbitInfo.c_str());
+    ROS_INFO("[PlayOrbit] sOrbitInfo:%s", sOrbitInfo.c_str());
 
     string sGroup = sOrbitInfo.substr(0, sOrbitInfo.find_last_of('-'));
     string sSecurity = sOrbitInfo.substr(sOrbitInfo.find_last_of('-')+1);
 
-    ROS_INFO("sGroup:%s, sSecurity:%s", sGroup.c_str(), sSecurity.c_str());
+    ROS_INFO("[PlayOrbit] sGroup:%s, sSecurity:%s", sGroup.c_str(), sSecurity.c_str());
 
     if(m_sOrbitGroup != sGroup || m_sOrbitSecurity != sSecurity || "1" != sSecurity)
     {
         bool bHasReset = !CheckOrigin(m_EliteCurrentPos);
         if(!ResetToOrigin(sOutput))
         {
-            ROS_ERROR("[PlayOrbit]%s",sOutput.c_str());
+            ROS_ERROR("[PlayOrbit] %s",sOutput.c_str());
             return false;
         }
 
@@ -2149,22 +2239,163 @@ bool CEliteControl::PlayOrbit(const std::string &sInput, std::string &sOutput)
         }
     }
 
-    if(CheckOrigin(m_EliteCurrentPos))
+ADJUST_CONFLICTION:
+	if("1" == sCalcRelativeAngle)
+	{
+        elt_robot_pos targetPos;
+        if(!GetOrbitEndPoint(sTrackFile, targetPos, sOutput))
+        {
+            ROS_ERROR("[PlayOrbit] %s", sOutput.c_str());
+            return false;
+        }
+
+		double dRobotPresetYawAngle = stod(sRobotPresetOrientation)/M_PI*180;
+		double dArmPresetYawAngle = targetPos[0];
+        dAngleDiff =  dRobotPresetYawAngle - m_dRobotOrientation;
+
+        while(dAngleDiff > 180 || dAngleDiff < -180)
+        {
+            if(dAngleDiff > 180)
+            {
+                dAngleDiff -= 360;
+            }
+            else if(dAngleDiff < -180)
+            {
+                dAngleDiff += 360;
+            }
+        }
+
+        double dArmYawAngle = dArmPresetYawAngle + dAngleDiff;
+
+        ROS_INFO("[PlayOrbit] dAngleDiff:%f, dArmYawAngle:%f", dAngleDiff, dArmYawAngle);
+
+        nPlayContain1stAxis = fabs(dAngleDiff) < 0.1 ? 1 : 0;
+
+        //判断轨迹末端是否有天线的自我干涉,是否需要转动机器人
+        bool bConflict = false, bZone1Axis1Conflict = false, bZone2Axis1Conflict = false;
+        for (unsigned long i = 0; i < m_vdConflictZone1Axis1.size(); i += 2)
+        {
+            if (dArmYawAngle > m_vdConflictZone1Axis1[i] && dArmYawAngle < m_vdConflictZone1Axis1[i+1])
+            {
+                bZone1Axis1Conflict = true;
+                break;
+            }
+        }
+        for (unsigned long i = 0; i < m_vdConflictZone2Axis1.size(); i += 2)
+        {
+            if (dArmYawAngle > m_vdConflictZone2Axis1[i] && dArmYawAngle < m_vdConflictZone2Axis1[i+1])
+            {
+                bZone2Axis1Conflict = true;
+                break;
+            }
+        }
+
+        if(bZone1Axis1Conflict || bZone2Axis1Conflict)
+        {
+            elt_robot_pos targetPosTemp = {0};
+
+            ifstream trackFile;
+
+            //打开轨迹文件
+            trackFile.open(sTrackFile.c_str(), ios::in);
+            if (!trackFile.is_open())
+            {
+                trackFile.close();
+                sOutput = "cannot open orbit file:";
+                sOutput.append(sTrackFile);
+                return false;
+            }
+            if(bZone1Axis1Conflict)
+            {
+                while (!trackFile.eof())
+                {
+                    for(int i=0; i<ROBOT_POSE_SIZE; i++)
+                    {
+                        trackFile >> targetPosTemp[i];
+                    }
+                    if(targetPos[1] < m_dConflictZone1Axis2)
+                    {
+                        bConflict = true;
+                    }
+                }
+            }
+            else
+            {
+                while (!trackFile.eof())
+                {
+                    for(int i=0; i<ROBOT_POSE_SIZE; i++)
+                    {
+                        trackFile >> targetPos[i];
+                    }
+                    if(targetPos[1] > m_dConflictZone2Axis2)
+                    {
+                        bConflict = true;
+                    }
+                }
+            }
+
+            trackFile.close();
+        }
+
+        if(bConflict)
+        {
+            //转动机器人之前,要确保机械臂处于原点位置
+            if(!CheckOrigin(m_EliteCurrentPos))
+            {
+                if(!ResetToOrigin(sOutput))
+                {
+                    ROS_ERROR("[PlayOrbit]%s",sOutput.c_str());
+                    return false;
+                }
+            }
+            actionlib::SimpleActionClient<wootion_msgs::GeneralAction> ActionClient("move_action");
+            ActionClient.waitForServer();
+
+            Json::Value JsonRoot;
+            Json::Value JsonGoal;
+            JsonRoot["velocity_yaw"] = 0.1;
+            JsonGoal["x"] = m_dRobotPositionX;
+            JsonGoal["y"] = m_dRobotPositionY;
+            JsonGoal["yaw"] = stod(sRobotPresetOrientation);
+            JsonRoot["goal_pose"] = JsonGoal;
+
+            wootion_msgs::GeneralGoal Goal;
+            Goal.header.stamp = ros::Time::now();
+            Goal.sender = m_sNodeName;
+            Goal.receiver = "move_base";
+            Goal.type = "rotate";
+            Goal.data = JsonRoot.toStyledString();
+            ROS_INFO("[PlayOrbit] move_action, data:%s", Goal.data.c_str());
+            ActionClient.sendGoal(Goal);
+
+            if (!ActionClient.waitForResult(ros::Duration(60.0)))
+            {
+                sOutput = "rotate robot timeout";
+                ROS_ERROR("[PlayOrbit] %s", sOutput.c_str());
+                return false;
+            }
+            nPlayContain1stAxis = 1;
+        }
+    }
+
+    ROS_INFO("[PlayOrbit] nPlayContain1stAxis:%d", nPlayContain1stAxis);
+
+	if(CheckOrigin(m_EliteCurrentPos))
     {
         if(nPlayContain1stAxis == 0)
         {
             elt_robot_pos targetPos;
             if(!GetOrbitEndPoint(sTrackFile, targetPos, sOutput))
             {
-                ROS_ERROR("[PlayOrbit]%s", sOutput.c_str());
+                ROS_ERROR("[PlayOrbit] %s", sOutput.c_str());
                 return false;
             }
 
-            string sSetYawInput = to_string((targetPos[0] - dAngleDiff) * 100);
+            string sSetYawInput = to_string((targetPos[0] + dAngleDiff) * 100);
             ROS_INFO("[PlayOrbit] targetPos[0]:%f, dAngleDiff:%f, sSetYawInput:%s", targetPos[0], dAngleDiff, sSetYawInput.c_str());
             if(!SetYawAngle(sSetYawInput, sOutput))
             {
-                ROS_ERROR("[PlayOrbit]%s", sOutput.c_str());
+                ROS_ERROR("[PlayOrbit] %s", sOutput.c_str());
                 return false;
             }
         }
@@ -2198,15 +2429,79 @@ bool CEliteControl::PlayOrbit(const std::string &sInput, std::string &sOutput)
 
         if(nPlayContain1stAxis == 0)
         {
-            targetPos[0] -= dAngleDiff;
+            targetPos[0] += dAngleDiff;
             PrintJointData(targetPos, "PlayOrbit");
+        }
+
+        //判断插补运动的过程中是否会有自我干涉
+        bool bZone1Axis1Conflict = false, bZone1Axis2Conflict = false, bZone2Axis1Conflict = false, bZone2Axis2Conflict = false;
+
+        elt_robot_pos currentPos;
+        memcpy(currentPos, m_EliteCurrentPos, sizeof(currentPos));
+        double d1stAxisMinAngle, d1stAxisMaxAngle, d2ndAxisMinAngle, d2ndAxisMaxAngle;
+
+        if(currentPos[0] < targetPos[0])
+        {
+            d1stAxisMinAngle = currentPos[0];
+            d1stAxisMaxAngle = targetPos[0];
+        }
+        else
+        {
+            d1stAxisMaxAngle = currentPos[0];
+            d1stAxisMinAngle = targetPos[0];
+        }
+
+        if(currentPos[1] < targetPos[1])
+        {
+            d2ndAxisMinAngle = currentPos[1];
+            d2ndAxisMaxAngle = targetPos[1];
+        }
+        else
+        {
+            d2ndAxisMaxAngle = currentPos[1];
+            d2ndAxisMinAngle = targetPos[1];
+        }
+
+        for(unsigned long i = 0; i < m_vdConflictZone1Axis1.size(); i += 2)
+        {
+            if((d1stAxisMinAngle >= m_vdConflictZone1Axis1[i] && d1stAxisMinAngle <= m_vdConflictZone1Axis1[i+1]) || \
+               (d1stAxisMaxAngle >= m_vdConflictZone1Axis1[i] && d1stAxisMaxAngle <= m_vdConflictZone1Axis1[i+1]) || \
+               (d1stAxisMinAngle <= m_vdConflictZone1Axis1[i] && d1stAxisMaxAngle >= m_vdConflictZone1Axis1[i+1]))
+            {
+                bZone1Axis1Conflict = true;
+                break;
+            }
+        }
+        for (unsigned long i = 0; i < m_vdConflictZone2Axis1.size(); i += 2)
+        {
+            if((d1stAxisMinAngle >= m_vdConflictZone2Axis1[i] && d1stAxisMinAngle <= m_vdConflictZone2Axis1[i+1]) || \
+               (d1stAxisMaxAngle >= m_vdConflictZone2Axis1[i] && d1stAxisMaxAngle <= m_vdConflictZone2Axis1[i+1]) || \
+               (d1stAxisMinAngle <= m_vdConflictZone2Axis1[i] && d1stAxisMaxAngle >= m_vdConflictZone2Axis1[i+1]))
+            {
+                bZone2Axis1Conflict = true;
+                break;
+            }
+        }
+
+        bZone1Axis2Conflict = (d2ndAxisMinAngle <= m_dConflictZone1Axis2);
+        bZone2Axis2Conflict = (d2ndAxisMaxAngle >= m_dConflictZone2Axis2);
+
+        if((bZone1Axis1Conflict && bZone1Axis2Conflict) || (bZone2Axis1Conflict && bZone2Axis2Conflict))
+        {
+            ROS_WARN("[PlayOrbit] arm is not at origin, auto run exist confliction");
+            if(!ResetToOrigin(sOutput))
+            {
+                ROS_ERROR("[PlayOrbit] %s",sOutput.c_str());
+                return false;
+            }
+            goto ADJUST_CONFLICTION;
         }
 
         int nType = m_nPlayType;//六轴同时逼近
         if(EliteMultiPointMove(targetPos, m_dEltSpeed, sOutput, nType) == -1)
         {
             sOutput.append(", play orbit failed");
-            ROS_ERROR("[PlayOrbit]%s",sOutput.c_str());
+            ROS_ERROR("[PlayOrbit] %s",sOutput.c_str());
             return false;
         }
     }
@@ -2258,7 +2553,7 @@ bool CEliteControl::Rotate(const std::string &sInput, std::string &sOutput)
 
     if (vCmdList.size() < 4)
     {
-        sOutput = "input error" + sInput;
+        sOutput = "input error: " + sInput;
         ROS_ERROR("[Rotate] %s",sOutput.c_str());
         return false;
     }
@@ -2271,7 +2566,7 @@ bool CEliteControl::Rotate(const std::string &sInput, std::string &sOutput)
 
     if(nSpeedLevel < 1 || nSpeedLevel > 63)
     {
-        sOutput = "input speed level error" + sInput;
+        sOutput = "input speed level error: " + sInput;
         ROS_ERROR("[Rotate] %s",sOutput.c_str());
         return false;
     }
@@ -2386,7 +2681,7 @@ bool CEliteControl::SetOrientation(const std::string &sInput, std::string &sOutp
 
     if (vCmdList.size() < 3)
     {
-        sOutput = "input error" + sInput;
+        sOutput = "input error: " + sInput;
         ROS_ERROR("[SetOrientation]%s",sOutput.c_str());
         return false;
     }
@@ -2443,7 +2738,7 @@ bool CEliteControl::GetPosition(std::string &sOutput)
     elt_error err;
     if(elt_positive_kinematic(m_eltCtx, m_EliteCurrentPos, response_pose_array, &err) == -1)
     {
-        sOutput = "get position error:";
+        sOutput = "get position error: ";
         sOutput.append(err.err_msg);
         ROS_ERROR("[GetPosition]%s",sOutput.c_str());
         return false;
@@ -2476,7 +2771,7 @@ bool CEliteControl::SetPosition(const std::string &sInput, std::string &sOutput)
 
     if (vCmdList.size() < 3)
     {
-        sOutput = "input error" + sInput;
+        sOutput = "input error: " + sInput;
         ROS_ERROR("[SetPosition]%s",sOutput.c_str());
         return false;
     }
@@ -2496,7 +2791,7 @@ bool CEliteControl::SetPosition(const std::string &sInput, std::string &sOutput)
     elt_error err;
     if(elt_inverse_kinematic(m_eltCtx, ElitePose, targetPos, &err) == -1)
     {
-        sOutput = "set position error:";
+        sOutput = "set position error: ";
         sOutput.append(err.err_msg);
         ROS_ERROR("[SetPosition]%s",sOutput.c_str());
         return false;
@@ -2697,7 +2992,7 @@ bool CEliteControl::GotoNewPos(const std::string &sInput, std::string &sOutput)
 
     if (vCmdList.size() < 7)
     {
-        sOutput = "input error" + sInput;
+        sOutput = "input error: " + sInput;
         ROS_ERROR("[GotoNewPos]%s",sOutput.c_str());
         return false;
     }
@@ -2718,7 +3013,7 @@ bool CEliteControl::GotoNewPos(const std::string &sInput, std::string &sOutput)
         }
         if(elt_inverse_kinematic(m_eltCtx, ElitePose, targetPos, &err) == -1)
         {
-            sOutput = "set position error:";
+            sOutput = "set position error: ";
             sOutput.append(err.err_msg);
             ROS_ERROR("[GotoNewPos]%s",sOutput.c_str());
             return false;
@@ -2757,7 +3052,7 @@ bool CEliteControl::VirtualTeach(const std::string &sInput, std::string &sOutput
 
     if (vCmdList.size() < 3)
     {
-        sOutput = "input error" + sInput;
+        sOutput = "input error: " + sInput;
         ROS_ERROR("[VirtualTeach] %s",sOutput.c_str());
         return false;
     }
@@ -2768,14 +3063,14 @@ bool CEliteControl::VirtualTeach(const std::string &sInput, std::string &sOutput
 
     if(nAxisNum < 1 || nAxisNum > 6)
     {
-        sOutput = "input axis num error" + sInput;
+        sOutput = "input axis num error: " + sInput;
         ROS_ERROR("[VirtualTeach] %s",sOutput.c_str());
         return false;
     }
 
     if(nSpeedLevel < 1 || nSpeedLevel > 63)
     {
-        sOutput = "input speed level error" + sInput;
+        sOutput = "input speed level error: " + sInput;
         ROS_ERROR("[VirtualTeach] %s",sOutput.c_str());
         return false;
     }
@@ -2810,6 +3105,9 @@ void CEliteControl::AgvStatusCallBack(const wootion_msgs::RobotStatus::ConstPtr 
 {
     bool bEmeStop = ((AgvStatus->warn_status[3] & 0x01) > 0);
     m_dRobotOrientation = AgvStatus->orientation/M_PI*180;
+	m_dRobotPositionX = AgvStatus->position[0];
+	m_dRobotPositionY = AgvStatus->position[1];
+
     if(m_bEmeStop && !bEmeStop)
     {
         //清除报警，3次重试。
@@ -2826,12 +3124,14 @@ void CEliteControl::AgvStatusCallBack(const wootion_msgs::RobotStatus::ConstPtr 
             return;
         }
 
-        //打开伺服,3次重试
+        //打开伺服,10次重试
         if(EliteOpenServo() == -1)
         {
             ROS_ERROR("[AgvStatusCallBack] open elite servo failed");
             return;
         }
+
+        m_bResetFromNearestPoint = true;
 
         if(!m_bArmInit)
         {
@@ -3127,7 +3427,7 @@ bool CEliteControl::GetOrbitEndPoint(const string sFileName, elt_robot_pos &dEnd
         }
     }
     trackFile.close();
-    PrintJointData(dEndPoint, "PlayOrbit");
+    PrintJointData(dEndPoint, "GetOrbitEndPoint");
     return true;
 }
 

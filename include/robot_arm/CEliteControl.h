@@ -26,6 +26,8 @@
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ini_parser.hpp>
+#include <jsoncpp/json/json.h>
+#include <actionlib/client/simple_action_client.h>
 #include "ros/ros.h"
 #include "elt_ctx.h"
 #include "elt_robot.h"
@@ -38,6 +40,7 @@
 #include "wootion_msgs/ControlService.h"
 #include "wootion_msgs/GeneralTopic.h"
 #include "wootion_msgs/RobotStatus.h"
+#include "wootion_msgs/GeneralAction.h"
 #include "CFileRW.h"
 
 using namespace std;
@@ -220,6 +223,8 @@ private:
     string m_sArmOrigin;
     string m_sOrbitGroup;
     string m_sOrbitSecurity;
+    string m_sAntennaConflictZone1;
+    string m_sAntennaConflictZone2;
 
     int m_nElitePort;
     int m_nEliteState;
@@ -246,6 +251,10 @@ private:
     double m_dFilterValue;
     double m_dMultiPointStep;
     double m_dRobotOrientation;
+    double m_dRobotPositionX;
+    double m_dRobotPositionY;
+    double m_dConflictZone1Axis2;
+    double m_dConflictZone2Axis2;
 
     timespec m_tRecordDataTime;
 
@@ -270,6 +279,9 @@ private:
     CFileRW m_TrackFile;
 
 	ResetIni m_ResetInfo;
+
+	std::vector<double> m_vdConflictZone1Axis1;
+	std::vector<double> m_vdConflictZone2Axis1;
 };
 
 #endif //PROJECT_CELITECONTROL_H

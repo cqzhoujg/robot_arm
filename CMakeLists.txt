@@ -6,6 +6,7 @@ add_compile_options(-std=c++11  -pthread)
 add_definitions(-g)
 
 find_library(ELITE_LIB eltrobot lib)
+find_library(JSONCPP_LIB jsoncpp)
 
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
@@ -13,6 +14,8 @@ find_library(ELITE_LIB eltrobot lib)
 find_package(catkin REQUIRED COMPONENTS
   roscpp
   wootion_msgs
+  actionlib
+  actionlib_msgs
 )
 
 ## System dependencies are found with CMake's conventions
@@ -149,7 +152,7 @@ add_executable(${PROJECT_NAME} src/elite_control_node.cpp src/CEliteControl.cpp)
 add_dependencies(${PROJECT_NAME} ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 ## Specify libraries to link a library or executable target against
-target_link_libraries(${PROJECT_NAME} ${catkin_LIBRARIES} ${ELITE_LIB})
+target_link_libraries(${PROJECT_NAME} ${catkin_LIBRARIES} ${ELITE_LIB} ${JSONCPP_LIB})
 
 #############
 ## Install ##

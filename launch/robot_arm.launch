@@ -17,5 +17,7 @@
         <param name="filter_value" value="20.0"/>
         <param name="play_type" value="1"/>
         <param name="multi_point_step" value="1.5"/>
+        <param name="antenna_conflict_zone1" value="-60,0,300,360;-153"/>
+        <param name="antenna_conflict_zone2" value="80,150,-280,-210;-27"/>
     </node>
 </launch>
