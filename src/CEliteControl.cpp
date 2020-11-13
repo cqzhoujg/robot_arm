@@ -370,7 +370,6 @@ void CEliteControl::UpdateEliteThreadFunc()
     memset(&LastPos, 0, sizeof(LastPos));
     memset(&m_EliteCurrentPos, 0, sizeof(m_EliteCurrentPos));
     int nErrorTimes = 0;
-//    int nEltMode = Remote;
 
     while(ros::ok())
     {
@@ -390,17 +389,6 @@ void CEliteControl::UpdateEliteThreadFunc()
             continue;
         }
 
-        //获取elt控制模式
-//        ret = elt_get_robot_mode(m_eltCtx, &m_nEliteMode, &err);
-//        if (ELT_SUCCESS != ret)
-//        {
-//            ROS_WARN("[UpdateEliteThreadFunc] get elite mode failed");
-//            nErrorTimes++;
-//            this_thread::sleep_for(std::chrono::milliseconds(200));
-//            continue;
-//        }
-//        ROS_WARN("[UpdateEliteThreadFunc] get elite mode :%d",m_nEliteMode);
-
         //获取elt各个轴的绝对位置信息
         if(GetElitePos(m_EliteCurrentPos) == -1)
         {
@@ -411,13 +399,6 @@ void CEliteControl::UpdateEliteThreadFunc()
         }
 
         nErrorTimes = 0;
-//        if(nEltMode != Remote && m_nEliteMode == Remote)
-//        {
-//            ROS_INFO("[UpdateEliteThreadFunc] elt mode changed ro remote, update the rotate origin");
-//            memcpy(m_RotateOriginPos, m_EliteCurrentPos, sizeof(m_RotateOriginPos));
-//        }
-
-//        nEltMode = m_nEliteMode;
 
         string sAxisData;
         bool bIsWrite = false;
@@ -1006,7 +987,8 @@ int CEliteControl::EliteDrag(int nCmd)
             return -1;
         }
 
-        if(EliteSyncMotorStatus() == -1)
+        bool bSwitchStatusFirst = false;
+        if(EliteSyncMotorStatus(bSwitchStatusFirst) == -1)
         {
             ROS_INFO("[EliteDrag] sync elite motor status failed");
             return -1;
@@ -1332,8 +1314,19 @@ bool CEliteControl::EliteGotoOrigin(string &sOutput)
     }
     else if(EliteRunDragTrack(m_ResetInfo.sOrbitFile, m_ResetInfo.nPlayFirstAxis, m_dEltSpeed, REVERSE, sOutput) == -1)
     {
-        ROS_ERROR("[EliteGotoOrigin]%s",sOutput.c_str());
-        return false;
+        if("empty" == sOutput)
+        {
+            if(EliteMultiPointMove(m_EltOriginPos, m_dEltSpeed, sOutput) == -1)
+            {
+                ROS_ERROR("[EliteGotoOrigin]%s",sOutput.c_str());
+                return false;
+            }
+        }
+        else
+        {
+            ROS_WARN("[EliteGotoOrigin]%s",sOutput.c_str());
+            return false;
+        }
     }
 
     if(!WaitForMotionStop(m_nTimeoutLen, sOutput))
