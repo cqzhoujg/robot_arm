@@ -1112,7 +1112,7 @@ int CEliteControl::EliteRunDragTrack(const string &sFileName, int nPlayFirstAxis
     if(m_bResetFromNearestPoint && nDirection == REVERSE)
         RemoveOverduePoints(trackDeque);
 
-    //根据方向，调用elt库函数，将队列中的点添加的elt运动轨迹点当中
+    //轨迹点平滑滤波
     int nLen = int(trackDeque.size());
 
     double dSrcData0[nLen], dSrcData1[nLen], dSrcData2[nLen], dSrcData3[nLen], dSrcData4[nLen], dSrcData5[nLen];
@@ -1133,7 +1133,6 @@ int CEliteControl::EliteRunDragTrack(const string &sFileName, int nPlayFirstAxis
     memset(dDesData5, 0, sizeof(dDesData0));
 
     int nRow = 0;
-    //根据方向，调用elt库函数，将队列中的点添加的elt运动轨迹点当中
     while(!trackDeque.empty())
     {
         EltPos targetPosTemp;
