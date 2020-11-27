@@ -22,7 +22,7 @@ int main(int argc, char **argv)
     signal(SIGINT, SignalFunc);
     signal(SIGKILL, SignalFunc);
 
-    CEliteControl elite_control;
+    CEliteControl::CEliteControl elite_control;
 
     ros::MultiThreadedSpinner spinner(6); // Use 6 threads
     spinner.spin(); // spin() will not return until the node has been shutdown

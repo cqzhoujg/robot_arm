@@ -5,6 +5,11 @@
 #include "CEliteControl.h"
 
 extern bool bExit;
+namespace CEliteControl
+{
+static boost::asio::io_service g_IoService;
+std::shared_ptr<boost::asio::io_service::work> g_pWork = std::make_shared<boost::asio::io_service::work>(g_IoService);
+static boost::asio::deadline_timer g_Timer(g_IoService);
 
 CEliteControl::CEliteControl():
     m_bRecordDragTrack(false),
@@ -227,6 +232,17 @@ CEliteControl::CEliteControl():
     catch (std::bad_alloc &exception)
     {
         ROS_ERROR("[CEliteControl] malloc heart beat thread failed, %s", exception.what());
+        UnInit();
+        exit(-1);
+    }
+
+    try
+    {
+        m_pTimeoutTimerThread = new std::thread(std::bind(&CEliteControl::TimeoutTimerThreadFunc, this));
+    }
+    catch (std::bad_alloc &exception)
+    {
+        ROS_ERROR("[CEliteControl] malloc timer thread failed, %s", exception.what());
         UnInit();
         exit(-1);
     }
@@ -683,10 +699,11 @@ int CEliteControl::EliteJointMove(elt_robot_pos &targetPos, double dSpeed, strin
     int ret;
     elt_error err;
 
+    double dTinyAngle = 0.01;
     //6轴运动限位检测，防止报警
     for(int i=0; i<6 ;i++)
     {
-        if(targetPos[i] > AxisLimitAngle[i] || targetPos[i] < AxisLimitAngle[i+6])
+        if(targetPos[i] > (AxisLimitAngle[i]+dTinyAngle) || targetPos[i] < (AxisLimitAngle[i+6]-dTinyAngle))
         {
             sErr.append("target pos error,the ").append(to_string(i+1)).append("th axis beyond the limit");
             ROS_ERROR("[EliteJointMove] %s", sErr.c_str());
@@ -1709,8 +1726,6 @@ void CEliteControl::ArmCmdCallBack(const wootion_msgs::GeneralCmd::ConstPtr &Arm
 
     wootion_msgs::GeneralAck ArmAck;
 
-    ROS_INFO("[ArmCmdCallBack] sender:%s, cmd:%s, data:%s", ArmCmd->sender.c_str(), ArmCmd->cmd.c_str(), ArmCmd->data.c_str());
-
     ArmAck.header.stamp = ros::Time::now();
     ArmAck.sender = "robot_arm";
     ArmAck.receiver = ArmCmd->sender;
@@ -1718,71 +1733,83 @@ void CEliteControl::ArmCmdCallBack(const wootion_msgs::GeneralCmd::ConstPtr &Arm
     ArmAck.ack = "failed";
     ArmAck.data.clear();
 
-    if ((m_nEliteState == EMERGENCY_STOP || m_nEliteState == ALARM) && \
+    if((m_nEliteState == MOVING || (m_nEliteState == STOP && (m_nTaskName == ROTATE || m_nTaskName == RECORD_TEACH)))&& \
+        ((m_nTaskName == ROTATE && ArmCmd->cmd == "rotate") || ((m_nTaskName == RECORD || m_nTaskName == RECORD_TEACH) && ArmCmd->cmd == "teach")))
+    {
+        ArmAck.ack = "success";
+        RestartTimeoutTimer();
+    }
+    else
+    {
+        ROS_INFO("[ArmCmdCallBack] sender:%s, cmd:%s, data:%s", ArmCmd->sender.c_str(), ArmCmd->cmd.c_str(), ArmCmd->data.c_str());
+
+        if ((m_nEliteState == EMERGENCY_STOP || m_nEliteState == ALARM) && \
         ArmCmd->cmd != "reset" && ArmCmd->cmd != "record_orbit" && ArmCmd->cmd != "play_orbit")
-    {
-        ROS_ERROR("[ArmCmdCallBack] work status abnormal");
-        ArmAck.data = "work status abnormal";
-        m_ArmAckPublisher.publish(ArmAck);
-        return;
-    }
+        {
+            ROS_ERROR("[ArmCmdCallBack] work status abnormal");
+            ArmAck.data = "work status abnormal";
+            m_ArmAckPublisher.publish(ArmAck);
+            return;
+        }
 
-    if (m_nEliteState == PAUSE && ArmCmd->cmd != "reset")
-    {
-        ROS_INFO("[ArmCmdCallBack] robot arm pause, has unfinished work");
-        ArmAck.data = "robot arm pause, has unfinished work";
-        m_ArmAckPublisher.publish(ArmAck);
-        return;
-    }
+        if (m_nEliteState == PAUSE && ArmCmd->cmd != "reset")
+        {
+            ROS_INFO("[ArmCmdCallBack] robot arm pause, has unfinished work");
+            ArmAck.data = "robot arm pause, has unfinished work";
+            m_ArmAckPublisher.publish(ArmAck);
+            return;
+        }
 
-    if (m_bBusy)
-    {
-        ROS_INFO("[ArmCmdCallBack] robot arm is busy");
-        ArmAck.data = "robot arm is busy";
-        m_ArmAckPublisher.publish(ArmAck);
-        return;
-    }
+        if (m_bBusy)
+        {
+            ROS_INFO("[ArmCmdCallBack] robot arm is busy");
+            ArmAck.data = "robot arm is busy";
+            m_ArmAckPublisher.publish(ArmAck);
+            return;
+        }
 
-    if (m_nEliteMode != Remote && \
+        if (m_nEliteMode != Remote && \
             (ArmCmd->cmd == "record_orbit" || ArmCmd->cmd == "play_orbit" || ArmCmd->cmd == "rotate" ||\
              ArmCmd->cmd == "set_orientation" || ArmCmd->cmd == "set_yaw_angle" || ArmCmd->cmd == "set_position" || ArmCmd->cmd == "reset"))
-    {
-        ArmAck.data = "mode error,the mode of robot arm is ";
-        m_nEliteMode == Teach ? ArmAck.data.append("teach") : ArmAck.data.append("play");
-        ROS_INFO("[ArmServiceFunc] %s",ArmAck.data.c_str());
-        return;
-    }
+        {
+            ArmAck.data = "mode error,the mode of robot arm is ";
+            m_nEliteMode == Teach ? ArmAck.data.append("teach") : ArmAck.data.append("play");
+            ROS_INFO("[ArmServiceFunc] %s",ArmAck.data.c_str());
+            return;
+        }
 
-    if (m_nEliteState == MOVING && \
+        if (m_nEliteState == MOVING && \
             (ArmCmd->cmd == "record_orbit" || ArmCmd->cmd == "play_orbit" || ArmCmd->cmd == "rotate" ||\
              ArmCmd->cmd == "set_orientation" || ArmCmd->cmd == "set_yaw_angle" || ArmCmd->cmd == "set_position" || ArmCmd->cmd == "reset"))
-    {
-        ROS_INFO("[ArmCmdCallBack] robot arm is moving");
-        ArmAck.data = "robot arm is moving";
-        m_ArmAckPublisher.publish(ArmAck);
-        return;
-    }
+        {
+            ROS_INFO("[ArmCmdCallBack] robot arm is moving");
+            ArmAck.data = "robot arm is moving";
+            m_ArmAckPublisher.publish(ArmAck);
+            return;
+        }
 
-    if (m_bRecordDragTrack && m_nEliteState != ALARM &&\
+        if (m_bRecordDragTrack && m_nEliteState != ALARM &&\
             (ArmCmd->cmd == "record_orbit" || ArmCmd->cmd == "play_orbit" || ArmCmd->cmd == "rotate" ||\
              ArmCmd->cmd == "set_orientation" || ArmCmd->cmd == "set_yaw_angle" || ArmCmd->cmd == "set_position" || ArmCmd->cmd == "reset"))
-    {
-        ROS_INFO("[ArmCmdCallBack] robot arm is recording orbit");
-        ArmAck.data = "robot arm is recording orbit";
-        m_ArmAckPublisher.publish(ArmAck);
-        return;
+        {
+            ROS_INFO("[ArmCmdCallBack] robot arm is recording orbit");
+            ArmAck.data = "robot arm is recording orbit";
+            m_ArmAckPublisher.publish(ArmAck);
+            return;
+        }
+
+        m_bBusy = true;
+
+        ArmAck.ack = ArmOperation(ArmCmd->cmd, ArmCmd->data, ArmAck.data) ? "success" : "failed";
+
+        m_bBusy = false;
+
+        ROS_INFO("[ArmCmdCallBack] ack:%s, data:%s", ArmAck.ack.c_str(), ArmAck.data.c_str());
     }
 
-    m_bBusy = true;
-
-    ArmAck.ack = ArmOperation(ArmCmd->cmd, ArmCmd->data, ArmAck.data) ? "success" : "failed";
-
-    m_bBusy = false;
-
-    ROS_INFO("[ArmCmdCallBack] ack:%s, data:%s", ArmAck.ack.c_str(), ArmAck.data.c_str());
     m_ArmAckPublisher.publish(ArmAck);
 
-    if(m_nTaskName != RECORD && m_nTaskName != ROTATE)
+    if(m_nTaskName != RECORD && m_nTaskName != RECORD_TEACH && m_nTaskName != ROTATE)
         m_nTaskName = IDLE;
 }
 
@@ -1917,6 +1944,8 @@ bool CEliteControl::ArmOperation(const std::string &sCommand, const std::string 
             ROS_ERROR("[StopRotate]%s",sOutput.c_str());
             return false;
         }
+        m_nTaskName = RECORD;
+        g_Timer.cancel();
     }
     else
     {
@@ -2062,15 +2091,52 @@ bool CEliteControl::StopOrbit(std::string &sOutput)
         sOriginData.append("\n");
         m_TrackFile.Output(sOriginData);
 
+        //先对一轴进行插值
+        while(ros::ok())
+        {
+            if(targetPos[0] - OriginPos[0] >= 0)
+            {
+                targetPosTemp[0] += dStepValue;
+                if(targetPosTemp[0] - targetPos[0] > 0.001)
+                {
+                    targetPosTemp[0] = targetPos[0];
+                }
+            }
+            else
+            {
+                targetPosTemp[0] -= dStepValue;
+                if(targetPosTemp[0] - targetPos[0] < 0.001)
+                {
+                    targetPosTemp[0] = targetPos[0];
+                }
+            }
+
+            string sPosData;
+            for(int j=0; j<ROBOT_POSE_SIZE; j++)
+            {
+                sPosData.append(to_string(targetPosTemp[j]));
+                if(j != ROBOT_POSE_SIZE - 1)
+                {
+                    sPosData.append(" ");
+                }
+            }
+            sPosData.append("\n");
+            m_TrackFile.Output(sPosData);
+
+            if(abs(targetPosTemp[0] - targetPos[0]) <= 0.0001)
+            {
+                break;
+            }
+        }
 
         //对目标只做线性差值
-        if(nType == 1) //6轴同时逼近
+        if(nType == 1) //5轴同时逼近
         {
             while(ros::ok())
             {
-                int nCount = 0;
-                string sPosData;
-                for(int i=0; i<ROBOT_POSE_SIZE; i++)
+                int nCount = 1;
+                string sPosData = to_string(targetPos[0]).append(" ");
+                for(int i=1; i<ROBOT_POSE_SIZE; i++)
                 {
                     if(targetPos[i] - OriginPos[i] >= 0)
                     {
@@ -2109,7 +2175,7 @@ bool CEliteControl::StopOrbit(std::string &sOutput)
         }
         else
         {
-            for(int i=0; i<6; i++)
+            for(int i=1; i<6; i++)
             {
                 while(ros::ok())
                 {
@@ -2245,19 +2311,9 @@ ADJUST_CONFLICTION:
 		double dArmPresetYawAngle = targetPos[0];
         dAngleDiff =  dRobotPresetYawAngle - m_dRobotOrientation;
 
-        while(dAngleDiff > 180 || dAngleDiff < -180)
-        {
-            if(dAngleDiff > 180)
-            {
-                dAngleDiff -= 360;
-            }
-            else if(dAngleDiff < -180)
-            {
-                dAngleDiff += 360;
-            }
-        }
-
         double dArmYawAngle = dArmPresetYawAngle + dAngleDiff;
+
+        AdjustAngle(dArmYawAngle);
 
         ROS_INFO("[PlayOrbit] dAngleDiff:%f, dArmYawAngle:%f", dAngleDiff, dArmYawAngle);
 
@@ -2372,6 +2428,7 @@ ADJUST_CONFLICTION:
 
     ROS_INFO("[PlayOrbit] nPlayContain1stAxis:%d", nPlayContain1stAxis);
 
+	//判断当前位置是否在原点, 不在原点则需要拟合插补轨迹直接运动至轨迹的终点
 	if(CheckOrigin(m_EliteCurrentPos))
     {
         if(nPlayContain1stAxis == 0)
@@ -2383,7 +2440,12 @@ ADJUST_CONFLICTION:
                 return false;
             }
 
-            string sSetYawInput = to_string((targetPos[0] + dAngleDiff) * 100);
+            double dSetYawAngle = targetPos[0] + dAngleDiff;
+            ROS_INFO("[PlayOrbit] before adjust angle, dSetYawAngle:%f", dSetYawAngle);
+            AdjustAngle(dSetYawAngle);
+            ROS_INFO("[PlayOrbit] after adjust angle, dSetYawAngle:%f", dSetYawAngle);
+
+            string sSetYawInput = to_string(dSetYawAngle * 100);
             ROS_INFO("[PlayOrbit] targetPos[0]:%f, dAngleDiff:%f, sSetYawInput:%s", targetPos[0], dAngleDiff, sSetYawInput.c_str());
             if(!SetYawAngle(sSetYawInput, sOutput))
             {
@@ -2419,17 +2481,18 @@ ADJUST_CONFLICTION:
             return false;
         }
 
+        elt_robot_pos currentPos;
+        memcpy(currentPos, m_EliteCurrentPos, sizeof(currentPos));
+
         if(nPlayContain1stAxis == 0)
         {
             targetPos[0] += dAngleDiff;
+            AdjustAngle(targetPos[0]);
             PrintJointData(targetPos, "PlayOrbit");
         }
 
         //判断插补运动的过程中是否会有自我干涉
         bool bZone1Axis1Conflict = false, bZone1Axis2Conflict = false, bZone2Axis1Conflict = false, bZone2Axis2Conflict = false;
-
-        elt_robot_pos currentPos;
-        memcpy(currentPos, m_EliteCurrentPos, sizeof(currentPos));
         double d1stAxisMinAngle, d1stAxisMaxAngle, d2ndAxisMinAngle, d2ndAxisMaxAngle;
 
         if(currentPos[0] < targetPos[0])
@@ -2637,6 +2700,7 @@ bool CEliteControl::StopRotate(std::string &sOutput)
     }
 
     m_nTaskName = IDLE;
+    g_Timer.cancel();
     return true;
 }
 
@@ -3081,8 +3145,7 @@ bool CEliteControl::VirtualTeach(const std::string &sInput, std::string &sOutput
         return false;
     }
 
-    m_nTaskName = TEACH;
-
+    m_nTaskName = RECORD_TEACH;
     return true;
 }
 
@@ -3423,14 +3486,98 @@ bool CEliteControl::GetOrbitEndPoint(const string sFileName, elt_robot_pos &dEnd
     return true;
 }
 
+/*************************************************
+Function: CEliteControl::AdjustAngle
+Description: 校验角度,将角度限制到 ±180度
+Input: double &dAngle, 角度
+Output: void
+Others: void
+**************************************************/
+void CEliteControl::AdjustAngle(double &dAngle)
+{
+    while(dAngle > 180.0 || dAngle < -180.0)
+    {
+        if(dAngle > 180)
+        {
+            dAngle -= 360;
+        }
+        else if(dAngle < -180)
+        {
+            dAngle += 360;
+        }
+    }
+}
+
+/*************************************************
+Function: CEliteControl::TimeoutTimerThreadFunc
+Description: rotate超时检测检测
+Input: void
+Output: void
+Others: void
+**************************************************/
+void CEliteControl::TimeoutTimerThreadFunc()
+{
+    ROS_INFO("[TimeoutTimerThreadFunc] IO Service running");
+    g_IoService.run();
+    ROS_INFO("[TimeoutTimerThreadFunc] IO Service end");
+}
+
+/*************************************************
+Function: CEliteControl::ArmCtrlTimeoutFunc
+Description: 超时状态处理函数
+Input: void
+Output: void
+Others: void
+**************************************************/
+void CEliteControl::ArmCtrlTimeoutFunc(const boost::system::error_code &ec)
+{
+    string sOutput;
+    if(!ec)
+    {
+        ROS_INFO("[ArmCtrlTimeoutFunc] rotate or teach timeout, call stop");
+        if(m_nEliteState == MOVING)
+        {
+            if(EliteStop(sOutput) == -1)
+            {
+                ROS_WARN("[ArmCtrlTimeoutFunc] stop failed, %s", sOutput.c_str());
+            }
+        }
+
+        if(m_nTaskName == ROTATE)
+            m_nTaskName = IDLE;
+
+        if(m_nTaskName == RECORD_TEACH)
+            m_nTaskName = RECORD;
+    }
+}
+
+/*************************************************
+Function: CEliteControl::RestartTimeoutTimer
+Description: 更新超时定时器
+Input: void
+Output: void
+Others: void
+**************************************************/
+void CEliteControl::RestartTimeoutTimer()
+{
+    g_Timer.cancel();
+    g_Timer.expires_from_now(boost::posix_time::milliseconds(1000));
+    g_Timer.async_wait(boost::bind(&CEliteControl::ArmCtrlTimeoutFunc, this, _1));
+}
+
 CEliteControl::~CEliteControl()
 {
     UnInit();
+    g_IoService.stop();
     m_pEliteStatusThread->join();
     m_pHeartBeatThread->join();
     m_pMonitorThread->join();
+    m_pTimeoutTimerThread->join();
 
     delete m_pEliteStatusThread;
     delete m_pHeartBeatThread;
     delete m_pMonitorThread;
+    delete m_pTimeoutTimerThread;
+}
+
 }

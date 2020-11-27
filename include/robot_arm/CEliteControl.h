@@ -26,6 +26,8 @@
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ini_parser.hpp>
+#include <boost/asio.hpp>
+#include <boost/date_time/posix_time/posix_time.hpp>
 #include <jsoncpp/json/json.h>
 #include <actionlib/client/simple_action_client.h>
 #include "ros/ros.h"
@@ -44,6 +46,9 @@
 #include "CFileRW.h"
 
 using namespace std;
+
+namespace CEliteControl
+{
 
 typedef enum _tagEltStatus
 {
@@ -67,6 +72,7 @@ typedef enum _tagArmStatus
     TEACH = 7,
     ERROR = 8,
     SET_ORIENTATION = 9,
+    RECORD_TEACH = 10,
 }ArmStatus;
 
 const static vector<string> vsArmStatus = {
@@ -80,6 +86,7 @@ const static vector<string> vsArmStatus = {
     "teach",
     "error",
     "set_orientation",
+    "record",
 };
 
 typedef enum _tagDragStatus
@@ -140,8 +147,8 @@ typedef enum _tagRotateType
 
 //大
 const static double AxisLimitAngle[12] = {
-    358.0,  358.0,  158.0,  358.0,  358.0,  358.0,
-   -358.0, -358.0, -158.0, -358.0, -358.0, -358.0
+    180.0,  358.0,  158.0,  358.0,  358.0,  358.0,
+   -180.0, -358.0, -158.0, -358.0, -358.0, -358.0
 };
 
 typedef struct _tagResetIni
@@ -160,6 +167,7 @@ public:
     void UnInit();
     void UpdateEliteThreadFunc();
     void HeartBeatThreadFunc();
+    void TimeoutTimerThreadFunc();
     void MonitorThreadFunc();
     void ArmCmdCallBack(const wootion_msgs::GeneralCmd::ConstPtr &TerraceCmd);
     void AgvStatusCallBack(const wootion_msgs::RobotStatus::ConstPtr &AgvStatus);
@@ -167,6 +175,9 @@ public:
     void PrintJointData(elt_robot_pos &pos_array, string sFunName);
     void RemoveErrPoints(deque<EltPos> &trackDeque);
     void RemoveOverduePoints(deque<EltPos> &trackDeque);
+    void AdjustAngle(double &dAngle);
+    void ArmCtrlTimeoutFunc(const boost::system::error_code &ec);
+    void RestartTimeoutTimer();
 
     int UpdateEltOrigin();
     int EliteJointMove(elt_robot_pos &targetPos, double dSpeed, string &sErr);
@@ -267,6 +278,7 @@ private:
     std::thread *m_pMonitorThread;
     std::thread *m_pEliteStatusThread;
     std::thread *m_pHeartBeatThread;
+    std::thread *m_pTimeoutTimerThread;
 
     ros::Subscriber m_ArmCmdSubscriber;
     ros::Subscriber m_AgvStatusSubscriber;
@@ -283,5 +295,5 @@ private:
 	std::vector<double> m_vdConflictZone1Axis1;
 	std::vector<double> m_vdConflictZone2Axis1;
 };
-
+}
 #endif //PROJECT_CELITECONTROL_H
