@@ -147,8 +147,8 @@ typedef enum _tagRotateType
 
 //大
 const static double AxisLimitAngle[12] = {
-    180.0,  358.0,  158.0,  358.0,  358.0,  358.0,
-   -180.0, -358.0, -158.0, -358.0, -358.0, -358.0
+    180.0,  10.0,  158.0,  358.0,  358.0,  358.0,
+   -180.0, -190.0, -158.0, -358.0, -358.0, -358.0
 };
 
 typedef struct _tagResetIni
@@ -266,6 +266,8 @@ private:
     double m_dRobotPositionY;
     double m_dConflictZone1Axis2;
     double m_dConflictZone2Axis2;
+    double m_dHeadConflictZoneAxis1;
+    double m_dHeadConflictZoneZ;
 
     timespec m_tRecordDataTime;
 

@@ -19,5 +19,7 @@
         <param name="multi_point_step" value="1.5"/>
         <param name="antenna_conflict_zone1" value="-60,0,300,360;-153"/>
         <param name="antenna_conflict_zone2" value="80,150,-280,-210;-27"/>
+        <param name="head_conflict_zone_axis1" value="40.0"/>
+        <param name="head_conflict_zone_z" value="-10.0"/>
     </node>
 </launch>

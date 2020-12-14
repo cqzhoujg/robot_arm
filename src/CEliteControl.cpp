@@ -50,6 +50,8 @@ CEliteControl::CEliteControl():
     PrivateNodeHandle.param("multi_point_step", m_dMultiPointStep, 1.5);
 	PrivateNodeHandle.param("antenna_conflict_zone1", m_sAntennaConflictZone1, std::string("-60,0,300,360;-153"));
 	PrivateNodeHandle.param("antenna_conflict_zone2", m_sAntennaConflictZone2, std::string("80,150,-280,-210;-27"));
+	PrivateNodeHandle.param("head_conflict_zone_axis1", m_dHeadConflictZoneAxis1, 40.0);
+	PrivateNodeHandle.param("head_conflict_zone_z", m_dHeadConflictZoneZ, -10.0);
 
 	PublicNodeHandle.param("arm_service", m_sArmService, std::string("arm_control"));
     PublicNodeHandle.param("arm_cmd", m_sArmCmdTopic, std::string("arm_cmd"));
@@ -77,6 +79,8 @@ CEliteControl::CEliteControl():
     ROS_INFO("[ros param] multi_point_step:%f", m_dMultiPointStep);
     ROS_INFO("[ros param] antenna_conflict_zone1:%s", m_sAntennaConflictZone1.c_str());
     ROS_INFO("[ros param] antenna_conflict_zone2:%s", m_sAntennaConflictZone2.c_str());
+    ROS_INFO("[ros param] head_conflict_zone_axis1:%f", m_dHeadConflictZoneAxis1);
+    ROS_INFO("[ros param] head_conflict_zone_z:%f", m_dHeadConflictZoneZ);
 
     ROS_INFO("[ros param] arm_service:%s", m_sArmService.c_str());
     ROS_INFO("[ros param] arm_cmd:%s", m_sArmCmdTopic.c_str());
@@ -623,6 +627,25 @@ void CEliteControl::HeartBeatThreadFunc()
         }
         ptAllItem.put("current_pos", sCurrentData);
 
+        //当前姿态点
+        elt_error err;
+        elt_robot_pose EliteCurrentPose;
+        if(elt_positive_kinematic(m_eltCtx, m_EliteCurrentPos, EliteCurrentPose, &err) == -1)
+        {
+            ROS_ERROR("[GetPosition]%s", err.err_msg);
+        }
+
+        string sCurrentPoseData;
+        for(int i=0; i<6; i++)
+        {
+            sCurrentPoseData.append(to_string(EliteCurrentPose[i]));
+            if(i != 5)
+            {
+                sCurrentPoseData.append(",");
+            }
+        }
+        ptAllItem.put("current_pose", sCurrentPoseData);
+
         std::stringstream ssStream;
         boost::property_tree::write_json(ssStream, ptAllItem);
         HeartBeatMsg.data = ssStream.str();
@@ -749,9 +772,10 @@ int CEliteControl::EliteMultiPointMove(elt_robot_pos &targetPos, double dSpeed, 
     double dStepValue = m_dMultiPointStep;
 
     //6轴运动限位检测，防止报警
+    double dTinyAngle = 0.01;
     for(int i=0; i<6 ;i++)
     {
-        if(targetPos[i] > AxisLimitAngle[i] || targetPos[i] < AxisLimitAngle[i+6])
+        if(targetPos[i] > (AxisLimitAngle[i]+dTinyAngle) || targetPos[i] < (AxisLimitAngle[i+6]-dTinyAngle))
         {
             sErrMsg.append("target pos error,the ").append(to_string(i+1)).append("th axis beyond the limit");
             ROS_ERROR("[EliteMultiPointMove] %s", sErrMsg.c_str());
@@ -1240,6 +1264,8 @@ bool CEliteControl::ResetToOrigin(string &sOutput)
 
     if(m_nEliteState == ALARM)
     {
+        m_bResetFromNearestPoint = true;
+
         //清除报警，3次重试。
         if(EliteClearAlarm() == -1)
         {
@@ -1262,7 +1288,6 @@ bool CEliteControl::ResetToOrigin(string &sOutput)
             return false;
         }
 
-        m_bResetFromNearestPoint = true;
         this_thread::sleep_for(std::chrono::milliseconds(500));
     }
 
@@ -1617,6 +1642,7 @@ bool CEliteControl::WaitForMotionStop(int nTimeoutTime, string &sErr)
     if(m_nEliteState != STOP)
     {
         sErr = "arm move error";
+        m_bResetFromNearestPoint = true;
         ROS_WARN("[WaitForMotionStop] output:%s, m_nEliteState:%d", sErr.c_str(), m_nEliteState);
         return false;
     }
@@ -2241,10 +2267,22 @@ Description: 播放拖拽记录的轨迹
 Input: std::string &sOutput, 处理结果反馈
 Output: true 成功
         false 失败
-Others: 机械臂轨迹文件的路径中包含分组及安全信息
+Others:
+	关于轨迹安全与否：
+ 		机械臂轨迹文件的路径中包含分组及安全信息
         track/group/000001-0/track-1-1.txt,
         其中000001-0 在‘-’左右两边分别为组号及安全与否标志; 000001为组号;0表示不安全, 1表示安全
         同组&&安全 才会直接运动插补过去，其他情况仍先返回原点再播放
+	关于规避干涉区：
+		1.天线干涉：
+			① 1轴位于([-60,0]或[300,360]) 并且 二轴位于[-∞,-153]
+			② 1轴位于([80,150]或[-280,-210] 并且 二轴位于[-27,∞]
+		2.车头处触发碰撞告警:
+			1轴位于[-40,40], 且末端Z坐标位于 [-∞,-150]
+		3.插补轨迹干涉判断：
+			在轨迹安全的情况下：轨迹A的末端----》轨迹B的末端，判断在运动过程中1轴和2轴所有的路点是否有经过天线干涉区①和干涉区②，
+			若经过干涉区，则复位机械臂从原点出发
+ 	注：凡是存在干涉，都会将机械臂置于原点，并将机器人转动到录预置位是的姿态再进行正常逻辑下的轨迹播放
 **************************************************/
 bool CEliteControl::PlayOrbit(const std::string &sInput, std::string &sOutput)
 {
@@ -2297,7 +2335,6 @@ bool CEliteControl::PlayOrbit(const std::string &sInput, std::string &sOutput)
         }
     }
 
-ADJUST_CONFLICTION:
 	if("1" == sCalcRelativeAngle)
 	{
         elt_robot_pos targetPos;
@@ -2306,6 +2343,18 @@ ADJUST_CONFLICTION:
             ROS_ERROR("[PlayOrbit] %s", sOutput.c_str());
             return false;
         }
+
+        //求取轨迹末端姿态
+        elt_error err;
+        elt_robot_pose TrackEndPose;
+
+        if(elt_positive_kinematic(m_eltCtx, targetPos, TrackEndPose, &err) == -1)
+        {
+            sOutput.append(err.err_msg);
+            ROS_ERROR("[GetPosition]%s", sOutput.c_str());
+            return false;
+        }
+        double dTrackEndZ = TrackEndPose[2];
 
 		double dRobotPresetYawAngle = stod(sRobotPresetOrientation)/M_PI*180;
 		double dArmPresetYawAngle = targetPos[0];
@@ -2385,6 +2434,13 @@ ADJUST_CONFLICTION:
             trackFile.close();
         }
 
+		//判断轨迹末端是否会触发防碰撞告警,进而决定是否转动机器人
+		if(dTrackEndZ < m_dHeadConflictZoneZ && fabs(dArmYawAngle) < fabs(m_dHeadConflictZoneAxis1))
+        {
+            bConflict = true;
+            ROS_WARN("[PlayOrbit] agv head conflicted, dTrackEndZ=%f, dArmYawAngle=%f", dTrackEndZ, dArmYawAngle);
+        }
+
         if(bConflict)
         {
             //转动机器人之前,要确保机械臂处于原点位置
@@ -2431,7 +2487,8 @@ ADJUST_CONFLICTION:
 	//判断当前位置是否在原点, 不在原点则需要拟合插补轨迹直接运动至轨迹的终点
 	if(CheckOrigin(m_EliteCurrentPos))
     {
-        if(nPlayContain1stAxis == 0)
+		PLAY_FROM_ORIGIN:
+		if(nPlayContain1stAxis == 0)
         {
             elt_robot_pos targetPos;
             if(!GetOrbitEndPoint(sTrackFile, targetPos, sOutput))
@@ -2549,7 +2606,7 @@ ADJUST_CONFLICTION:
                 ROS_ERROR("[PlayOrbit] %s",sOutput.c_str());
                 return false;
             }
-            goto ADJUST_CONFLICTION;
+            goto PLAY_FROM_ORIGIN;
         }
 
         int nType = m_nPlayType;//六轴同时逼近
@@ -3165,6 +3222,8 @@ void CEliteControl::AgvStatusCallBack(const wootion_msgs::RobotStatus::ConstPtr 
 
     if(m_bEmeStop && !bEmeStop)
     {
+        m_bResetFromNearestPoint = true;
+
         //清除报警，3次重试。
         if(EliteClearAlarm() == -1)
         {
@@ -3185,8 +3244,6 @@ void CEliteControl::AgvStatusCallBack(const wootion_msgs::RobotStatus::ConstPtr 
             ROS_ERROR("[AgvStatusCallBack] open elite servo failed");
             return;
         }
-
-        m_bResetFromNearestPoint = true;
 
         if(!m_bArmInit)
         {
