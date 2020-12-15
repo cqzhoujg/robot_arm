@@ -182,6 +182,7 @@ public:
     int UpdateEltOrigin();
     int EliteJointMove(elt_robot_pos &targetPos, double dSpeed, string &sErr);
     int EliteMultiPointMove(elt_robot_pos &targetPos, double dSpeed, string &sErrMsg, int nType=0);
+    int EliteAutoReset(string &sErrMsg);
     int GetElitePos(elt_robot_pos &pos_array);
     int EliteStop(string &sErr);
     int EliteDrag(int nCmd);
@@ -236,6 +237,7 @@ private:
     string m_sOrbitSecurity;
     string m_sAntennaConflictZone1;
     string m_sAntennaConflictZone2;
+    string m_sTeachOrbitFile;
 
     int m_nElitePort;
     int m_nEliteState;

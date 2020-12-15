@@ -909,6 +909,159 @@ int CEliteControl::EliteMultiPointMove(elt_robot_pos &targetPos, double dSpeed, 
 }
 
 /*************************************************
+Function: CEliteControl::EliteAutoReset
+Description: 轨迹文件失效或者为空时，插补出安全的轨迹，并按照该轨迹进行复位
+Input: string &sErr 错误返回信息
+Output: 1, 成功
+       -1, 失败
+Others: void
+**************************************************/
+int CEliteControl::EliteAutoReset(string &sErrMsg)
+{
+    ROS_INFO("[EliteAutoReset] start");
+    elt_error err;
+    int ret;
+    double dStepValue = m_dMultiPointStep;
+
+    //设置轨迹路点运动的速度
+    ret = elt_set_waypoint_max_joint_speed( m_eltCtx, m_dEltSpeed, &err);
+
+    if (ret != ELT_SUCCESS)
+    {
+        sErrMsg = "set speed failed";
+        ROS_ERROR("[EliteAutoReset] %s,err code: %d,err message: %s",sErrMsg.c_str(), err.code, err.err_msg);
+        return -1;
+    }
+
+    //清除轨迹点集
+    ret = elt_clear_waypoint( m_eltCtx, &err);
+    if (ret != ELT_SUCCESS)
+    {
+        sErrMsg = "clear way point failed";
+        ROS_ERROR("[EliteAutoReset] %s,err code: %d,err message: %s",sErrMsg.c_str(), err.code, err.err_msg);
+        return -1;
+    }
+
+    deque<EltPos> resetOrbitDeque;
+
+    elt_robot_pos OriginPos, targetPosTemp, targetPos;
+    memcpy(OriginPos, m_EltOriginPos, sizeof(OriginPos));
+    memcpy(targetPosTemp, m_EltOriginPos, sizeof(OriginPos));
+    memcpy(targetPos, m_EliteCurrentPos, sizeof(targetPos));
+
+    EltPos wayPoint;
+    memset(&wayPoint, 0, sizeof(wayPoint));
+
+    string sOriginData;
+    for(int i=0; i<ROBOT_POSE_SIZE; i++)
+    {
+        wayPoint.eltPos[i] = m_EltOriginPos[i];
+    }
+
+    resetOrbitDeque.push_front(wayPoint);
+
+    //先对一轴进行插值
+    while(ros::ok())
+    {
+        if(targetPos[0] - OriginPos[0] >= 0)
+        {
+            targetPosTemp[0] += dStepValue;
+            if(targetPosTemp[0] - targetPos[0] > 0.001)
+            {
+                targetPosTemp[0] = targetPos[0];
+            }
+        }
+        else
+        {
+            targetPosTemp[0] -= dStepValue;
+            if(targetPosTemp[0] - targetPos[0] < 0.001)
+            {
+                targetPosTemp[0] = targetPos[0];
+            }
+        }
+
+        for(int j=0; j<ROBOT_POSE_SIZE; j++)
+        {
+            wayPoint.eltPos[j] = targetPosTemp[j];
+        }
+
+        resetOrbitDeque.push_front(wayPoint);
+
+        if(abs(targetPosTemp[0] - targetPos[0]) <= 0.0001)
+        {
+            break;
+        }
+    }
+
+    //对其他5轴进行同步插值
+    while(ros::ok())
+    {
+        int nCount = 1;
+        for(int i=1; i<ROBOT_POSE_SIZE; i++)
+        {
+            if(targetPos[i] - OriginPos[i] >= 0)
+            {
+                targetPosTemp[i] += dStepValue;
+                if(targetPosTemp[i] - targetPos[i] > 0.001)
+                {
+                    targetPosTemp[i] = targetPos[i];
+                    nCount++;
+                }
+            }
+            else
+            {
+                targetPosTemp[i] -= dStepValue;
+                if(targetPosTemp[i] - targetPos[i] < 0.001)
+                {
+                    targetPosTemp[i] = targetPos[i];
+                    nCount++;
+                }
+            }
+        }
+
+        for(int i=0; i<ROBOT_POSE_SIZE; i++)
+        {
+            wayPoint.eltPos[i] = targetPosTemp[i];
+        }
+
+        resetOrbitDeque.push_front(wayPoint);
+
+        if(nCount == ROBOT_POSE_SIZE)
+        {
+            ROS_INFO("[EliteAutoReset] add way point done");
+            break;
+        }
+    }
+
+    for(auto wayPointTemp : resetOrbitDeque)
+    {
+//        PrintJointData(wayPointTemp.eltPos, __FUNCTION__);
+        ret = elt_add_waypoint( m_eltCtx, wayPointTemp.eltPos, &err);
+        if (ret != ELT_SUCCESS)
+        {
+            sErrMsg = "add way point err";
+            ROS_INFO("[EliteAutoReset] %s,err code: %d,err message: %s",sErrMsg.c_str(), err.code, err.err_msg);
+            return -1;
+        }
+    }
+
+    //执行轨迹
+    int nMoveType = 0;
+    ret = elt_track_move( m_eltCtx, nMoveType, m_nSmoothnessLevel, &err);
+
+    if (ret != ELT_SUCCESS)
+    {
+        sErrMsg = "elt track move error";
+        ROS_INFO("[EliteAutoReset] %s,err code: %d,err message: %s",sErrMsg.c_str(), err.code, err.err_msg);
+        return -1;
+    }
+    ROS_INFO("[EliteAutoReset] call elt track move");
+
+    this_thread::sleep_for(std::chrono::milliseconds(100));
+    return 1;
+}
+
+/*************************************************
 Function: CEliteControl::GetElitePos
 Description: 艾利特机器人各个关节角度信息获取
 Input: elt_robot_pos &pos_array, 保存角度位置信息
@@ -1347,7 +1500,7 @@ bool CEliteControl::EliteGotoOrigin(string &sOutput)
     }
     if(m_ResetInfo.nValid == 0)
     {
-        if(EliteMultiPointMove(m_EltOriginPos, m_dEltSpeed, sOutput) == -1)
+        if(EliteAutoReset(sOutput) == -1)
         {
             ROS_ERROR("[EliteGotoOrigin]%s",sOutput.c_str());
             return false;
@@ -1357,7 +1510,7 @@ bool CEliteControl::EliteGotoOrigin(string &sOutput)
     {
         if("empty" == sOutput)
         {
-            if(EliteMultiPointMove(m_EltOriginPos, m_dEltSpeed, sOutput) == -1)
+            if(EliteAutoReset(sOutput) == -1)
             {
                 ROS_ERROR("[EliteGotoOrigin]%s",sOutput.c_str());
                 return false;
@@ -2005,71 +2158,76 @@ bool CEliteControl::RecordOrbit(const std::string &sInput, std::string &sOutput)
         m_bDragRecord = !(vCmdList[1] == "teach");
     }
 
-	string sTrackFile = vCmdList[0];
-    string sFilePath;
-
-	if(!sTrackFile.empty())
-	{
-		sFilePath = sTrackFile.substr(0, sTrackFile.find_last_of('/'));
-		string sCmd = "mkdir -p ";
-		sCmd.append(sFilePath);
-		int nStatus = system(sCmd.c_str());
-		if(-1 == nStatus)
-		{
-			sOutput = "create data path failed, system error";
-			ROS_ERROR("[RecordOrbit]%s",sOutput.c_str());
-			return false;
-		}
-		else
-		{
-			if(0 == int(WIFEXITED(nStatus)))
-			{
-				sOutput = "create data path failed, run shell error";
-				ROS_ERROR("[RecordOrbit]%s",sOutput.c_str());
-				return false;
-			}
-		}
-	}
-	else
-    {
-        sTrackFile = m_sArmTrackPath + m_sOrbitFileName;
-    }
-
-    ROS_INFO("[RecordOrbit] the orbit file is:%s",sTrackFile.c_str());
-
-    if(m_TrackFile.CloseFile() == -1)
-    {
-        ROS_ERROR("[RecordOrbit] close orbit file failed");
-    }
-    if(m_TrackFile.OpenFile(sTrackFile, O_CREAT | O_TRUNC | O_RDWR) == -1)
-    {
-        sOutput = "open file failed";
-        ROS_ERROR("[RecordOrbit]%s",sOutput.c_str());
-        return false;
-    }
-
     if(m_bDragRecord)
     {
+        string sTrackFile = vCmdList[0];
+        string sFilePath;
+
+        if(!sTrackFile.empty())
+        {
+            sFilePath = sTrackFile.substr(0, sTrackFile.find_last_of('/'));
+            string sCmd = "mkdir -p ";
+            sCmd.append(sFilePath);
+            int nStatus = system(sCmd.c_str());
+            if(-1 == nStatus)
+            {
+                sOutput = "create data path failed, system error";
+                ROS_ERROR("[RecordOrbit]%s",sOutput.c_str());
+                return false;
+            }
+            else
+            {
+                if(0 == int(WIFEXITED(nStatus)))
+                {
+                    sOutput = "create data path failed, run shell error";
+                    ROS_ERROR("[RecordOrbit]%s",sOutput.c_str());
+                    return false;
+                }
+            }
+        }
+        else
+        {
+            sTrackFile = m_sArmTrackPath + m_sOrbitFileName;
+        }
+
+        ROS_INFO("[RecordOrbit] the orbit file is:%s",sTrackFile.c_str());
+
+        if(m_TrackFile.CloseFile() == -1)
+        {
+            ROS_ERROR("[RecordOrbit] close orbit file failed");
+        }
+        if(m_TrackFile.OpenFile(sTrackFile, O_CREAT | O_TRUNC | O_RDWR) == -1)
+        {
+            sOutput = "open file failed";
+            ROS_ERROR("[RecordOrbit]%s",sOutput.c_str());
+            return false;
+        }
+
         if(EliteDrag(ENABLE) == -1)
         {
             sOutput = "enable drag failed";
             ROS_ERROR("[RecordOrbit]%s",sOutput.c_str());
             return false;
         }
-    }
 
-    ResetIni ResetInfo;
-    ResetInfo.sOrbitFile = sTrackFile;
-    ResetInfo.nPlayFirstAxis = 1;
-    ResetInfo.nValid = 1;
-    if(!RecordResetInfoToIni(m_sResetIniFile, ResetInfo))
+        ResetIni ResetInfo;
+        ResetInfo.sOrbitFile = sTrackFile;
+        ResetInfo.nPlayFirstAxis = 1;
+        ResetInfo.nValid = 1;
+        if(!RecordResetInfoToIni(m_sResetIniFile, ResetInfo))
+        {
+            sOutput.append(", save the reset info to ini failed");
+            ROS_ERROR("[PlayOrbit]%s",sOutput.c_str());
+            return false;
+        }
+
+        sOutput = sTrackFile;
+    }
+    else
     {
-        sOutput.append(", save the reset info to ini failed");
-        ROS_ERROR("[PlayOrbit]%s",sOutput.c_str());
-        return false;
+        m_sTeachOrbitFile = vCmdList[0];
     }
 
-    sOutput = sTrackFile;
     m_nTaskName = RECORD;
 
     return true;
@@ -2093,9 +2251,65 @@ bool CEliteControl::StopOrbit(std::string &sOutput)
             ROS_ERROR("[StopOrbit]%s",sOutput.c_str());
             return false;
         }
+
+        if(m_TrackFile.CloseFile() == -1)
+        {
+            sOutput = "close file failed";
+            ROS_ERROR("[StopOrbit]%s",sOutput.c_str());
+            return false;
+        }
+
+        ROS_INFO("[StopOrbit] disable drag and close the orbit file");
     }
     else
     {
+        string sTrackFile = m_sTeachOrbitFile;
+        string sFilePath;
+
+        if(!sTrackFile.empty())
+        {
+            sFilePath = sTrackFile.substr(0, sTrackFile.find_last_of('/'));
+            string sCmd = "mkdir -p ";
+            sCmd.append(sFilePath);
+            int nStatus = system(sCmd.c_str());
+            if(-1 == nStatus)
+            {
+                sOutput = "create data path failed, system error";
+                ROS_ERROR("[StopOrbit]%s",sOutput.c_str());
+                return false;
+            }
+            else
+            {
+                if(0 == int(WIFEXITED(nStatus)))
+                {
+                    sOutput = "create data path failed, run shell error";
+                    ROS_ERROR("[StopOrbit]%s",sOutput.c_str());
+                    return false;
+                }
+            }
+        }
+        else
+        {
+            sOutput = "close file failed";
+            ROS_ERROR("[StopOrbit]%s",sOutput.c_str());
+            return false;
+        }
+
+        ROS_INFO("[StopOrbit] the orbit file is:%s",sTrackFile.c_str());
+
+        CFileRW OrbitFile;
+
+        if(OrbitFile.CloseFile() == -1)
+        {
+            ROS_ERROR("[StopOrbit] close orbit file failed");
+        }
+        if(OrbitFile.OpenFile(sTrackFile, O_CREAT | O_TRUNC | O_RDWR) == -1)
+        {
+            sOutput = "open file failed";
+            ROS_ERROR("[StopOrbit]%s",sOutput.c_str());
+            return false;
+        }
+
         m_bDragRecord = true;
         elt_robot_pos OriginPos, targetPosTemp, targetPos;
         memcpy(OriginPos, m_EltOriginPos, sizeof(OriginPos));
@@ -2115,7 +2329,7 @@ bool CEliteControl::StopOrbit(std::string &sOutput)
             }
         }
         sOriginData.append("\n");
-        m_TrackFile.Output(sOriginData);
+        OrbitFile.Output(sOriginData);
 
         //先对一轴进行插值
         while(ros::ok())
@@ -2147,7 +2361,7 @@ bool CEliteControl::StopOrbit(std::string &sOutput)
                 }
             }
             sPosData.append("\n");
-            m_TrackFile.Output(sPosData);
+            OrbitFile.Output(sPosData);
 
             if(abs(targetPosTemp[0] - targetPos[0]) <= 0.0001)
             {
@@ -2191,10 +2405,10 @@ bool CEliteControl::StopOrbit(std::string &sOutput)
                 }
 
                 sPosData.append("\n");
-                m_TrackFile.Output(sPosData);
+                OrbitFile.Output(sPosData);
                 if(nCount == ROBOT_POSE_SIZE)
                 {
-                    ROS_INFO("[EliteMultiPointMove] add way point done");
+                    ROS_INFO("[StopOrbit] add way point done");
                     break;
                 }
             }
@@ -2232,7 +2446,7 @@ bool CEliteControl::StopOrbit(std::string &sOutput)
                         }
                     }
                     sPosData.append("\n");
-                    m_TrackFile.Output(sPosData);
+                    OrbitFile.Output(sPosData);
 
 //                    PrintJointData(targetPosTemp, "EliteMultiPointMove");
 
@@ -2243,16 +2457,14 @@ bool CEliteControl::StopOrbit(std::string &sOutput)
                 }
             }
         }
-    }
 
-    if(m_TrackFile.CloseFile() == -1)
-    {
-        sOutput = "close file failed";
-        ROS_ERROR("[StopOrbit]%s",sOutput.c_str());
-        return false;
+        if(OrbitFile.CloseFile() == -1)
+        {
+            sOutput = "close file failed";
+            ROS_ERROR("[StopOrbit]%s",sOutput.c_str());
+            return false;
+        }
     }
-
-    ROS_INFO("[StopOrbit] disable drag and close the orbit file");
 
     memcpy(m_RotateOriginPos, m_EliteCurrentPos, sizeof(m_RotateOriginPos));
     ROS_INFO("[StopOrbit] update rotate origin");
