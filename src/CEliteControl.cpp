@@ -2464,6 +2464,17 @@ bool CEliteControl::StopOrbit(std::string &sOutput)
             ROS_ERROR("[StopOrbit]%s",sOutput.c_str());
             return false;
         }
+
+        ResetIni ResetInfo;
+        ResetInfo.sOrbitFile = sTrackFile;
+        ResetInfo.nPlayFirstAxis = 1;
+        ResetInfo.nValid = 1;
+        if(!RecordResetInfoToIni(m_sResetIniFile, ResetInfo))
+        {
+            sOutput.append(", save the reset info to ini failed");
+            ROS_ERROR("[StopOrbit]%s",sOutput.c_str());
+            return false;
+        }
     }
 
     memcpy(m_RotateOriginPos, m_EliteCurrentPos, sizeof(m_RotateOriginPos));
