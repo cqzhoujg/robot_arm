@@ -1292,7 +1292,7 @@ int CEliteControl::EliteRunDragTrack(const string &sFileName, int nPlayFirstAxis
     if(trackDeque.size() > 1)//读取时会重复读取最后一行
         trackDeque.pop_back();
 
-    if(trackDeque.size() <= 1)
+    if(trackDeque.empty())
     {
         sErrMsg = "empty";
         ROS_INFO("[EliteRunDragTrack] reset orbit file is empty");
